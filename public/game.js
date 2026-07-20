@@ -881,6 +881,31 @@
     });
   }
 
+  function renderFinalCredits() {
+    const creditCloud = document.createElement("div");
+    creditCloud.className = "final-credit-cloud";
+    creditCloud.setAttribute("aria-label", "사용 리소스 출처");
+
+    [
+      ["Music:", "Suno AI"],
+      ["Font:", "BM JUA"],
+    ].forEach(([label, value]) => {
+      const row = document.createElement("div");
+      row.className = "final-credit-row";
+      const labelElement = document.createElement("span");
+      labelElement.className = "final-credit-label";
+      labelElement.textContent = label;
+      const valueElement = document.createElement("strong");
+      valueElement.className = "final-credit-value";
+      valueElement.textContent = value;
+      row.appendChild(labelElement);
+      row.appendChild(valueElement);
+      creditCloud.appendChild(row);
+    });
+
+    finalLayer.appendChild(creditCloud);
+  }
+
   function showFinalScreen() {
     clearIdleReminder();
     state.final = true;
@@ -912,6 +937,7 @@
 
     renderFinalAngels();
     renderAmenPopcorn();
+    renderFinalCredits();
     playFx("victory", 0, 1);
     playFx("applause", 70, 0.9);
     playFx("theEnd", 2900, 0.95);

@@ -868,6 +868,74 @@ button {
   font-size: 70px;
 }
 
+.final-credit-cloud {
+  position: absolute;
+  z-index: 22;
+  left: 94px;
+  top: 142px;
+  width: 418px;
+  height: 128px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: #2a7fd2;
+  background: #fff;
+  border-radius: 48% 52% 46% 54% / 58% 52% 48% 42%;
+  box-shadow: 0 7px 0 rgb(255 255 255 / 34%);
+  opacity: 0;
+  transform: scale(0.72) translateY(12px);
+  animation: final-credit-arrive 680ms cubic-bezier(0.2, 1.25, 0.35, 1) 4.2s forwards;
+}
+
+.final-credit-cloud::before,
+.final-credit-cloud::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  background: #fff;
+  border-radius: 50%;
+}
+
+.final-credit-cloud::before {
+  left: 46px;
+  top: -22px;
+  width: 138px;
+  height: 74px;
+}
+
+.final-credit-cloud::after {
+  right: 42px;
+  top: -17px;
+  width: 154px;
+  height: 78px;
+}
+
+.final-credit-row {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 84px 152px;
+  align-items: baseline;
+  column-gap: 10px;
+  line-height: 1;
+}
+
+.final-credit-label {
+  color: #9a72dc;
+  font-size: 22px;
+  text-align: right;
+}
+
+.final-credit-value {
+  color: #ed85b6;
+  font-size: 31px;
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+}
+
 .final-star {
   position: absolute;
   overflow: hidden;
@@ -1119,6 +1187,12 @@ button {
   100% { opacity: 1; transform: scale(1); }
 }
 
+@keyframes final-credit-arrive {
+  0% { opacity: 0; transform: scale(0.72) translateY(12px); }
+  72% { opacity: 1; transform: scale(1.04) translateY(-2px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
 @keyframes final-sparkle {
   0%, 100% { opacity: 0.2; transform: translateX(-8px) scale(0.25); }
   46% { opacity: 1; transform: translateX(8px) scale(1.15); }
@@ -1157,7 +1231,8 @@ button {
 
   .final-title,
   .final-star,
-  .angel-sprite.final-cheer {
+  .angel-sprite.final-cheer,
+  .final-credit-cloud {
     animation-duration: 1800ms;
   }
 }
