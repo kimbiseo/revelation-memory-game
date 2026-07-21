@@ -296,6 +296,21 @@ button {
   animation: fixed-cloud-enter 460ms cubic-bezier(0.18, 1.45, 0.35, 1) both;
 }
 
+.cloud-card.visibility-ready {
+  display: block;
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  z-index: 2;
+}
+
+.cloud-card.visibility-ready .cloud-visual,
+.cloud-card.visibility-ready .cloud-art.white,
+.cloud-card.visibility-ready .cloud-word {
+  visibility: visible;
+  opacity: 1;
+}
+
 .decorative-cloud {
   position: absolute;
   z-index: 1;

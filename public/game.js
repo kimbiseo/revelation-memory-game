@@ -122,6 +122,11 @@
     pendingInitialEntrance: false,
     previousFirstTargetSlot: null,
     firstTargetSlotUsage: Array(11).fill(0),
+    batchTimers: new Set(),
+    staleBatchCallbacksIgnored: 0,
+    staleTimerMutationCount: 0,
+    cardVisibilityRepairCount: 0,
+    angelVisibilityRepairCount: 0,
   };
 
   const bgm = new Audio("/assets/audio/game-bgm.mp3");
@@ -138,6 +143,24 @@
 
   function usesMobileLayout() {
     return stage.dataset.mobileLayout === "true";
+  }
+
+  function clearBatchTimers() {
+    state.batchTimers.forEach((timerId) => window.clearTimeout(timerId));
+    state.batchTimers.clear();
+  }
+
+  function setBatchTimeout(callback, delay, token = state.batchToken) {
+    const timerId = window.setTimeout(() => {
+      state.batchTimers.delete(timerId);
+      if (token !== state.batchToken) {
+        state.staleBatchCallbacksIgnored += 1;
+        return;
+      }
+      callback();
+    }, delay);
+    state.batchTimers.add(timerId);
+    return timerId;
   }
 
   function getMobileLayoutBounds() {
@@ -310,8 +333,136 @@
       animating: false,
       selected: false,
     };
+    button.addEventListener("animationend", (event) => {
+      if (event.target !== button || event.animationName !== "fixed-cloud-enter") return;
+      if (!card.selected && !card.animating) forceActiveCardVisible(card);
+    });
     button.addEventListener("click", () => handleCard(card));
     return card;
+  }
+
+  function resetCardVisualState(card) {
+    card.el.getAnimations({ subtree: true }).forEach((animation) => animation.cancel());
+    card.el.className = "cloud-card fixed-card";
+    card.el.disabled = false;
+    card.el.style.opacity = "0";
+    card.el.style.visibility = "visible";
+    card.el.style.display = "block";
+    card.el.style.pointerEvents = "auto";
+    card.el.style.transform = "none";
+    card.el.style.removeProperty("animation");
+    card.el.style.removeProperty("transition");
+    card.el.style.zIndex = "2";
+    const visual = card.el.querySelector(".cloud-visual");
+    const whiteCloud = card.el.querySelector(".cloud-art.white");
+    const darkCloud = card.el.querySelector(".cloud-art.dark");
+    [visual, whiteCloud, darkCloud, card.wordEl].forEach((element) => {
+      element?.getAnimations().forEach((animation) => animation.cancel());
+      element?.style.removeProperty("animation");
+      element?.style.removeProperty("transition");
+      element?.style.removeProperty("transform");
+      element?.style.removeProperty("display");
+      element?.style.removeProperty("visibility");
+      element?.style.removeProperty("opacity");
+    });
+  }
+
+  function forceActiveCardVisible(card) {
+    if (!card.el.isConnected || card.selected || card.animating) return false;
+    card.el.classList.remove("entering", "exiting", "correct", "wrong", "batch-storm", "batch-exit", "respawn");
+    card.el.classList.add("fixed-card", "idle", "visibility-ready");
+    card.el.disabled = false;
+    card.el.style.opacity = "1";
+    card.el.style.visibility = "visible";
+    card.el.style.display = "block";
+    card.el.style.pointerEvents = "auto";
+    card.el.style.zIndex = "2";
+    const visual = card.el.querySelector(".cloud-visual");
+    const whiteCloud = card.el.querySelector(".cloud-art.white");
+    [visual, whiteCloud, card.wordEl].forEach((element) => {
+      if (!element) return;
+      element.style.opacity = "1";
+      element.style.visibility = "visible";
+      element.style.removeProperty("display");
+    });
+    return true;
+  }
+
+  function cardVisibilityIssue(card) {
+    if (!card.el.isConnected || card.selected || card.animating) return null;
+    const rect = card.el.getBoundingClientRect();
+    const style = getComputedStyle(card.el);
+    const visual = card.el.querySelector(".cloud-visual");
+    const whiteCloud = card.el.querySelector(".cloud-art.white");
+    const word = card.wordEl;
+    const visibleViewport = window.visualViewport;
+    const left = visibleViewport?.offsetLeft ?? 0;
+    const top = visibleViewport?.offsetTop ?? 0;
+    const right = left + (visibleViewport?.width ?? window.innerWidth);
+    const bottom = top + (visibleViewport?.height ?? window.innerHeight);
+    const visible = style.display !== "none"
+      && style.visibility === "visible"
+      && Number(style.opacity) >= 0.99
+      && rect.width > 0
+      && rect.height > 0
+      && rect.left >= left - 1
+      && rect.right <= right + 1
+      && rect.top >= top - 1
+      && rect.bottom <= bottom + 1
+      && Boolean(visual)
+      && Boolean(whiteCloud)
+      && normalizeText(word?.textContent).length > 0;
+    return visible ? null : { cardId: card.id, word: card.word };
+  }
+
+  function enforceActiveCardVisibility() {
+    if (state.final || state.locked) return [];
+    const activeCards = state.cards.filter((card) => !card.selected && !card.animating);
+    const issues = activeCards.map(cardVisibilityIssue).filter(Boolean);
+    if (issues.length > 0) {
+      state.cardVisibilityRepairCount += issues.length;
+      activeCards.forEach((card) => {
+        if (cardVisibilityIssue(card)) forceActiveCardVisible(card);
+      });
+    }
+    ensureCurrentAnswerCard();
+    stage.dataset.hiddenActiveCardCount = String(
+      activeCards.map(cardVisibilityIssue).filter(Boolean).length,
+    );
+    return issues;
+  }
+
+  function enforceAngelVisibility() {
+    if (state.final) return false;
+    const angel = angelZone.querySelector(":scope > .angel-sprite:not(.final-cheer)");
+    const image = angel?.querySelector("img");
+    const style = angel ? getComputedStyle(angel) : null;
+    const imageStyle = image ? getComputedStyle(image) : null;
+    const visible = Boolean(
+      angel
+      && image
+      && angel.isConnected
+      && style.display !== "none"
+      && style.visibility === "visible"
+      && Number(style.opacity) >= 0.99
+      && imageStyle.display !== "none"
+      && imageStyle.visibility === "visible"
+      && Number(imageStyle.opacity) >= 0.99
+    );
+    if (visible) return false;
+    state.angelVisibilityRepairCount += 1;
+    if (!angel || !image) {
+      setAngel("idle");
+      return true;
+    }
+    angel.style.display = "block";
+    angel.style.visibility = "visible";
+    angel.style.opacity = "1";
+    angel.style.zIndex = "21";
+    image.style.display = "block";
+    image.style.visibility = "visible";
+    image.style.opacity = "1";
+    return true;
   }
 
   function createDecorativeCloud(left, top, width, stretch) {
@@ -462,6 +613,9 @@
       }, targetCard.colorIndex);
     }
     targetCard.el.disabled = false;
+    if (!state.locked && !targetCard.selected && !targetCard.animating) {
+      forceActiveCardVisible(targetCard);
+    }
     return targetCard;
   }
 
@@ -664,7 +818,9 @@
   }
 
   function populateCards() {
+    clearBatchTimers();
     const token = ++state.batchToken;
+    setAngel("idle");
     if (usesMobileLayout()) stage.dataset.mobileBatchValid = "false";
     const batch = getBatchWords();
     state.batchTargetCount = batch.targetCount;
@@ -675,9 +831,7 @@
       setCardWord(card, entry, card.colorIndex);
       card.animating = false;
       card.selected = false;
-      card.el.className = "cloud-card fixed-card";
-      card.el.style.opacity = "0";
-      card.el.disabled = false;
+      resetCardVisualState(card);
     });
     ensureCurrentAnswerCard();
     applyMobileGeometry();
@@ -689,21 +843,18 @@
       });
     }
     updateHint();
-    window.setTimeout(() => {
-      if (token !== state.batchToken) return;
+    setBatchTimeout(() => {
       playFx("cloudEntrance", 0, 0.8);
       if (decorationsNeedEntrance) {
         state.decorations.forEach((cloud, index) => {
-          window.setTimeout(() => {
-            if (token !== state.batchToken) return;
+          setBatchTimeout(() => {
             cloud.style.opacity = "";
             cloud.classList.add("show", "entering");
-            window.setTimeout(() => {
-              if (token !== state.batchToken) return;
+            setBatchTimeout(() => {
               cloud.classList.remove("entering");
               cloud.classList.add("idle");
-            }, 480);
-          }, 25 + index * 65);
+            }, 480, token);
+          }, 25 + index * 65, token);
         });
       }
       const currentTarget = answerCards[state.answerIndex];
@@ -713,27 +864,27 @@
         return rightIsTarget - leftIsTarget || left.id - right.id;
       });
       entranceOrder.forEach((card, index) => {
-        window.setTimeout(() => {
-          if (token !== state.batchToken) return;
+        setBatchTimeout(() => {
           card.el.style.opacity = "1";
           card.el.classList.add("entering");
-          window.setTimeout(() => {
-            if (token !== state.batchToken) return;
+          setBatchTimeout(() => {
             card.el.classList.remove("entering");
-            card.el.classList.add("idle");
-          }, 480);
-        }, index * 50);
+            card.el.classList.add("idle", "visibility-ready");
+            forceActiveCardVisible(card);
+          }, 480, token);
+        }, index * 50, token);
       });
-      window.setTimeout(() => {
-        if (token !== state.batchToken) return;
+      setBatchTimeout(() => {
         state.locked = false;
         ensureCurrentAnswerCard();
+        state.cards.forEach(forceActiveCardVisible);
+        enforceActiveCardVisibility();
         applyMobileGeometry();
         if (usesMobileLayout()) validateMobileBatch();
         updateHint();
         armIdleReminder();
-      }, state.cards.length * 50 + 500);
-    }, 200);
+      }, state.cards.length * 50 + 500, token);
+    }, 200, token);
   }
 
   function startBgm() {
@@ -914,33 +1065,44 @@
     let wrap = angelZone.querySelector(":scope > .angel-sprite:not(.final-cheer)");
     if (!wrap) {
       wrap = document.createElement("span");
-      [
-        ["idle", "angel_idle.png"],
-        ["smile", "angel_happy.png"],
-        ["heart", "angel_fullbody.png"],
-        ["cry", "angel_cry.png"],
-      ].forEach(([frame, file]) => {
-        const image = document.createElement("img");
-        image.className = `angel-frame angel-frame-${frame}`;
-        image.src = `/assets/images/${file}`;
-        image.alt = "";
-        image.draggable = false;
-        wrap.appendChild(image);
-      });
-      angelZone.replaceChildren(wrap);
+      const image = document.createElement("img");
+      image.alt = "";
+      image.draggable = false;
+      wrap.appendChild(image);
+      angelZone.appendChild(wrap);
     }
+    const frameFiles = {
+      idle: "angel_idle.png",
+      smile: "angel_happy.png",
+      heart: "angel_fullbody.png",
+      cry: "angel_cry.png",
+    };
     wrap.className = "angel-sprite";
     wrap.style.left = "12px";
+    wrap.style.opacity = "1";
+    wrap.style.visibility = "visible";
+    wrap.style.display = "block";
+    wrap.style.zIndex = "21";
     const activeFrame = type === "cheer" ? "heart" : type;
-    wrap.querySelectorAll(".angel-frame").forEach((image) => {
-      image.classList.toggle("active", image.classList.contains(`angel-frame-${activeFrame}`));
-    });
+    const image = wrap.querySelector("img");
+    const nextSource = `/assets/images/${frameFiles[activeFrame] || frameFiles.idle}`;
+    image.className = `angel-frame angel-frame-${activeFrame} active`;
+    if (image.getAttribute("src") !== nextSource) image.src = nextSource;
+    image.style.opacity = "1";
+    image.style.visibility = "visible";
+    image.style.display = "block";
     if (type === "heart" || type === "cheer") {
       wrap.classList.add("fullbody-heart", "milestone-jump");
     }
     if (duration > 0) {
+      const cheerBatchToken = state.batchToken;
+      const cheerWrap = wrap;
       state.cheerTimer = window.setTimeout(() => {
         state.cheerTimer = 0;
+        if (cheerBatchToken !== state.batchToken || !cheerWrap.isConnected) {
+          state.staleBatchCallbacksIgnored += 1;
+          return;
+        }
         setAngel("idle");
       }, duration);
     }
@@ -961,6 +1123,7 @@
 
   function finishBatch() {
     const transitionToken = state.batchToken;
+    clearBatchTimers();
     clearIdleReminder();
     state.locked = true;
     updateHint();
@@ -975,14 +1138,13 @@
       cloud.classList.remove("idle", "show", "entering");
       cloud.style.opacity = "0";
     });
-    window.setTimeout(() => {
-      if (transitionToken !== state.batchToken) return;
+    setBatchTimeout(() => {
       if (state.answerIndex >= answerCards.length) showFinalScreen();
       else {
         state.batchNumber += 1;
         populateCards();
       }
-    }, 980);
+    }, 980, transitionToken);
   }
 
   function handleCorrect(card) {
@@ -994,8 +1156,10 @@
     const completedVerse = target.verseCardIndex === verseChunks[target.verseIndex].length - 1;
     card.animating = true;
     card.selected = true;
-    card.el.classList.remove("idle");
+    card.el.classList.remove("idle", "visibility-ready");
     card.el.classList.add("correct");
+    card.el.style.pointerEvents = "none";
+    card.el.style.zIndex = "10";
     state.answerIndex += 1;
     syncCurrentTarget();
     state.batchCorrectCount += 1;
@@ -1026,10 +1190,10 @@
     const batchFinished = state.batchCorrectCount >= state.batchTargetCount;
     if (batchFinished) state.locked = true;
 
-    window.setTimeout(() => {
+    setBatchTimeout(() => {
       card.el.style.opacity = "0";
       card.el.disabled = true;
-    }, 930);
+    }, 930, cardBatchToken);
 
     if (batchFinished) {
       updateHint();
@@ -1037,24 +1201,29 @@
     } else {
       const next = answerCards[state.answerIndex]?.word;
       updateHint();
+      setBatchTimeout(enforceActiveCardVisibility, 0, cardBatchToken);
       if (next) announce(`정답. 다음 말씀은 ${next}`);
     }
   }
 
   function handleWrong(card) {
+    const cardBatchToken = state.batchToken;
     card.animating = true;
-    card.el.classList.remove("idle");
+    card.el.classList.remove("idle", "visibility-ready");
     card.el.classList.add("wrong");
+    card.el.style.pointerEvents = "none";
+    card.el.style.zIndex = "9";
     state.consecutiveCorrect = 0;
     state.consecutiveWrong += 1;
     playFx("incorrect");
     setAngel("cry", 860);
     announce("다시 생각해 보세요.");
-    window.setTimeout(() => {
+    setBatchTimeout(() => {
       card.el.classList.remove("wrong");
-      card.el.classList.add("idle");
       card.animating = false;
-    }, 820);
+      forceActiveCardVisible(card);
+      enforceActiveCardVisibility();
+    }, 820, cardBatchToken);
   }
 
   function handleCard(card) {
@@ -1130,9 +1299,12 @@
       primaryAngel.className = "angel-sprite fullbody-heart final-cheer";
       primaryAngel.style.left = `${positions[0]}px`;
       primaryAngel.style.animationDelay = `${delays[0]}ms`;
-      primaryAngel.querySelectorAll(".angel-frame").forEach((image) => {
-        image.classList.toggle("active", image.classList.contains("angel-frame-heart"));
-      });
+      const image = primaryAngel.querySelector("img");
+      image.src = "/assets/images/angel_fullbody.png";
+      image.className = "angel-frame angel-frame-heart active";
+      image.style.opacity = "1";
+      image.style.visibility = "visible";
+      image.style.display = "block";
     }
     const fragment = document.createDocumentFragment();
     positions.slice(primaryAngel ? 1 : 0).forEach((left, offset) => {
@@ -1207,6 +1379,11 @@
   }
 
   function showFinalScreen() {
+    clearBatchTimers();
+    if (state.cheerTimer) {
+      window.clearTimeout(state.cheerTimer);
+      state.cheerTimer = 0;
+    }
     clearIdleReminder();
     state.final = true;
     state.locked = true;
@@ -1271,6 +1448,15 @@
   }
 
   function resetGame() {
+    clearBatchTimers();
+    if (state.cheerTimer) {
+      window.clearTimeout(state.cheerTimer);
+      state.cheerTimer = 0;
+    }
+    const endingAngels = [...angelZone.querySelectorAll(":scope > .angel-sprite.final-cheer")];
+    const reusableAngel = endingAngels.shift();
+    endingAngels.forEach((angel) => angel.remove());
+    if (reusableAngel) reusableAngel.className = "angel-sprite";
     state.verseIndex = 0;
     state.chunkIndex = 0;
     state.answerIndex = 0;
@@ -1332,7 +1518,43 @@
   });
   window.addEventListener("resize", scheduleMobileGeometry, { passive: true });
   window.visualViewport?.addEventListener("resize", scheduleMobileGeometry, { passive: true });
+  window.setInterval(() => {
+    if (!state.paused && !state.final) {
+      enforceAngelVisibility();
+      if (!state.locked) enforceActiveCardVisibility();
+    }
+  }, 750);
   window.__REVELATION_GAME_VALIDATE_MOBILE__ = () => validateMobileBatch({ repair: false });
+  window.__REVELATION_GAME_VALIDATE_VISIBILITY__ = () => {
+    const activeCards = state.cards.filter((card) => !card.selected && !card.animating);
+    const cardIssues = activeCards.map(cardVisibilityIssue).filter(Boolean);
+    const angel = angelZone.querySelector(":scope > .angel-sprite:not(.final-cheer)");
+    const angelStyle = angel ? getComputedStyle(angel) : null;
+    const angelImage = angel?.querySelector("img");
+    const angelVisible = Boolean(
+      angel
+      && angelImage
+      && angel.isConnected
+      && angelStyle.display !== "none"
+      && angelStyle.visibility === "visible"
+      && Number(angelStyle.opacity) >= 0.99
+      && angel.getBoundingClientRect().width > 0
+      && angel.getBoundingClientRect().height > 0
+    );
+    return {
+      batchToken: state.batchToken,
+      activeCardCount: activeCards.length,
+      hiddenActiveCardCount: cardIssues.length,
+      cardIssues,
+      angelCount: angelZone.querySelectorAll(":scope > .angel-sprite:not(.final-cheer)").length,
+      angelVisible,
+      staleBatchCallbacksIgnored: state.staleBatchCallbacksIgnored,
+      staleTimerMutationCount: state.staleTimerMutationCount,
+      cardVisibilityRepairCount: state.cardVisibilityRepairCount,
+      angelVisibilityRepairCount: state.angelVisibilityRepairCount,
+      pendingBatchTimerCount: state.batchTimers.size,
+    };
+  };
   createCards();
   updateMenuLabels();
   resetGame();
