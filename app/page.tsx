@@ -5,7 +5,6 @@ import { useEffect, useState, type CSSProperties } from "react";
 const DESIGN_WIDTH = 971.219;
 const DESIGN_HEIGHT = 1920;
 const MOBILE_DESIGN_WIDTH = 606;
-const MOBILE_MIN_LOGICAL_HEIGHT = 1198;
 const MOBILE_MAX_WIDTH = 430;
 
 type CloudBootstrap = {
@@ -77,16 +76,22 @@ export default function Home() {
     let viewportFrame = 0;
     const updateViewport = () => {
       const visualViewport = window.visualViewport;
-      const measuredWidth = visualViewport?.width ?? window.innerWidth;
-      const measuredHeight = visualViewport?.height ?? window.innerHeight;
-      const width = Number.isFinite(measuredWidth) && measuredWidth > 0
-        ? measuredWidth
-        : document.documentElement.clientWidth;
-      const height = Number.isFinite(measuredHeight) && measuredHeight > 0
-        ? measuredHeight
-        : document.documentElement.clientHeight;
-      const left = visualViewport?.offsetLeft ?? 0;
-      const top = visualViewport?.offsetTop ?? 0;
+      const innerWidth = window.innerWidth || document.documentElement.clientWidth;
+      const innerHeight = window.innerHeight || document.documentElement.clientHeight;
+      const hasVisualViewport = Boolean(
+        visualViewport
+        && Number.isFinite(visualViewport.width)
+        && Number.isFinite(visualViewport.height)
+        && visualViewport.width > 0
+        && visualViewport.height > 0,
+      );
+      const mobile = innerWidth <= MOBILE_MAX_WIDTH;
+      const width = mobile
+        ? innerWidth
+        : (hasVisualViewport ? visualViewport!.width : innerWidth);
+      const height = hasVisualViewport ? visualViewport!.height : innerHeight;
+      const left = mobile ? 0 : (hasVisualViewport ? visualViewport!.offsetLeft : 0);
+      const top = hasVisualViewport ? visualViewport!.offsetTop : 0;
       const shell = document.getElementById("viewport-shell");
       const styles = shell ? window.getComputedStyle(shell) : null;
       const safeNumber = (value?: string) => {
@@ -99,17 +104,13 @@ export default function Home() {
       const safeBottom = safeNumber(styles?.paddingBottom);
       const horizontalSafeArea = safeLeft + safeRight;
       const verticalSafeArea = safeTop + safeBottom;
-      const mobile = width <= MOBILE_MAX_WIDTH;
       // visualViewport already excludes Android Chrome's browser UI. Applying
       // env(safe-area-inset-*) again here creates a second, sky-colored top gap
       // on physical Samsung devices, so mobile uses the visual viewport itself.
       const availableWidth = Math.max(1, mobile ? width : width - horizontalSafeArea);
       const availableHeight = Math.max(1, mobile ? height : height - verticalSafeArea);
       const scale = mobile
-        ? Math.min(
-            availableWidth / MOBILE_DESIGN_WIDTH,
-            availableHeight / MOBILE_MIN_LOGICAL_HEIGHT,
-          )
+        ? availableWidth / MOBILE_DESIGN_WIDTH
         : Math.min(availableWidth / DESIGN_WIDTH, availableHeight / DESIGN_HEIGHT);
 
       const nextViewport = {
@@ -202,20 +203,13 @@ export default function Home() {
       }
     : undefined;
   const canvasStyle: CSSProperties | undefined = viewport?.mobile
-    ? (() => {
-        const physicalCanvasWidth = MOBILE_DESIGN_WIDTH * viewport.scale;
-        const logicalLeft = Math.max(
-          0,
-          (viewport.stageWidth - physicalCanvasWidth) / (2 * viewport.scale),
-        );
-        return {
-          width: `${MOBILE_DESIGN_WIDTH}px`,
-          height: `${viewport.stageHeight / viewport.scale}px`,
-          left: `${logicalLeft}px`,
-          top: 0,
-          zoom: viewport.scale,
-        };
-      })()
+    ? {
+        width: `${MOBILE_DESIGN_WIDTH}px`,
+        height: `${viewport.stageHeight / viewport.scale}px`,
+        left: 0,
+        top: 0,
+        zoom: viewport.scale,
+      }
     : undefined;
 
   return (

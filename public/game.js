@@ -18,15 +18,12 @@
     [153, 0], [453, 4], [453, 0], [153, 4], [153, 5],
     [453, 5],
   ];
-  const MOBILE_DECORATIONS = [
-    [-112, 190, 160, 0.72], [558, 205, 160, 0.72],
-    [-115, 470, 164, 0.74], [557, 492, 164, 0.74],
-    [-112, 742, 160, 0.72], [558, 760, 160, 0.72],
-    [-109, 1015, 156, 0.7], [559, 1030, 156, 0.7],
+  const MOBILE_DECORATION_TEMPLATE = [
+    ["left", 0.04, 160, 0.72], ["right", 0.06, 160, 0.72],
+    ["left", 0.32, 164, 0.74], ["right", 0.34, 164, 0.74],
+    ["left", 0.61, 160, 0.72], ["right", 0.63, 160, 0.72],
+    ["left", 0.9, 156, 0.7], ["right", 0.92, 156, 0.7],
   ];
-  const MOBILE_CARD_SIDE_GUTTER = 12;
-  const MOBILE_CARD_TOP = 210;
-  const MOBILE_CARD_BOTTOM_RESERVE = 245;
 
   // User-authored final card data. Keep every card boundary and spelling intact.
   const verseChunks = [
@@ -143,12 +140,44 @@
     return stage.dataset.mobileLayout === "true";
   }
 
-  function getMobileSlots() {
+  function getMobileLayoutBounds() {
     const logicalWidth = gameCanvas?.clientWidth || W;
     const logicalHeight = gameCanvas?.clientHeight || 1198;
-    const firstRow = MOBILE_CARD_TOP + CARD_H / 2;
-    const bottomEdge = Math.min(965, logicalHeight - MOBILE_CARD_BOTTOM_RESERVE);
-    const lastRow = Math.max(firstRow + CARD_H * 5, bottomEdge - CARD_H / 2);
+    const canvasRect = gameCanvas?.getBoundingClientRect();
+    const renderedScale = canvasRect?.width
+      ? canvasRect.width / logicalWidth
+      : 1;
+    const toLogicalY = (physicalY) => (
+      (physicalY - (canvasRect?.top || 0)) / renderedScale
+    );
+    const sentenceRect = sentenceWindow?.getBoundingClientRect();
+    const angel = angelZone.querySelector(":scope > .angel-sprite:not(.final-cheer)");
+    const angelRect = angel?.getBoundingClientRect();
+    const separation = CARD_H * 0.12;
+    let topEdge = sentenceRect?.height
+      ? toLogicalY(sentenceRect.bottom) + separation
+      : CARD_H * 0.75;
+    let bottomEdge = angelRect?.height
+      ? toLogicalY(angelRect.top) - separation
+      : logicalHeight - CARD_H * 1.2;
+
+    topEdge = Math.max(CARD_H / 2, topEdge);
+    bottomEdge = Math.min(logicalHeight - CARD_H / 2, bottomEdge);
+    const minimumCardRegion = CARD_H * 6;
+    if (bottomEdge - topEdge < minimumCardRegion) {
+      topEdge = Math.max(CARD_H / 2, bottomEdge - minimumCardRegion);
+    }
+
+    return { logicalWidth, logicalHeight, topEdge, bottomEdge };
+  }
+
+  function getMobileSlots() {
+    const { logicalWidth, topEdge, bottomEdge } = getMobileLayoutBounds();
+    // Keep the idle-float transform inside the live card region as well. The
+    // padding is expressed in card units so it remains stable at every scale.
+    const motionPadding = CARD_H * 0.08;
+    const firstRow = topEdge + CARD_H / 2 + motionPadding;
+    const lastRow = bottomEdge - CARD_H / 2 - motionPadding;
     const rowGap = (lastRow - firstRow) / 5;
     const leftCenter = logicalWidth * 0.2525;
     const rightCenter = logicalWidth * 0.7475;
@@ -160,11 +189,11 @@
   }
 
   function getMobileDecorations() {
-    const logicalHeight = gameCanvas?.clientHeight || 1198;
-    const lastDecorationTop = Math.max(900, logicalHeight - 188);
-    return MOBILE_DECORATIONS.map(([left, top, width, stretch], index) => [
-      left,
-      index >= 6 ? Math.min(top, lastDecorationTop + (index % 2) * 15) : top,
+    const { logicalWidth, topEdge, bottomEdge } = getMobileLayoutBounds();
+    const decorationTravel = Math.max(0, bottomEdge - topEdge - CARD_H);
+    return MOBILE_DECORATION_TEMPLATE.map(([side, progress, width, stretch]) => [
+      side === "left" ? -width * 0.7 : logicalWidth - width * 0.3,
+      topEdge + progress * decorationTravel,
       width,
       stretch,
     ]);
@@ -351,12 +380,13 @@
     if (!usesMobileLayout() || state.final) return;
     const slots = getMobileSlots();
     const logicalWidth = gameCanvas?.clientWidth || W;
+    const sideGutter = logicalWidth * 0.02;
     state.cards.forEach((card, index) => {
       const [centerX, centerY] = slots[index];
       const unclampedX = centerX - card.width / 2;
       const x = Math.min(
-        logicalWidth - MOBILE_CARD_SIDE_GUTTER - card.width,
-        Math.max(MOBILE_CARD_SIDE_GUTTER, unclampedX),
+        logicalWidth - sideGutter - card.width,
+        Math.max(sideGutter, unclampedX),
       );
       card.centerX = x + card.width / 2;
       card.centerY = centerY;
@@ -451,8 +481,9 @@
     const viewportRect = stage.getBoundingClientRect();
     const canvasRect = gameCanvas.getBoundingClientRect();
     const scale = canvasRect.width / (gameCanvas?.clientWidth || W);
-    const topLimit = viewportRect.top + MOBILE_CARD_TOP * scale;
-    const bottomLimit = viewportRect.bottom - MOBILE_CARD_BOTTOM_RESERVE * scale;
+    const layoutBounds = getMobileLayoutBounds();
+    const topLimit = canvasRect.top + layoutBounds.topEdge * scale;
+    const bottomLimit = canvasRect.top + layoutBounds.bottomEdge * scale;
     const currentCards = state.cards.filter((card) => card.el.isConnected);
     const targetCards = target
       ? currentCards.filter((card) => (
@@ -913,6 +944,7 @@
         setAngel("idle");
       }, duration);
     }
+    if (usesMobileLayout()) scheduleMobileGeometry();
   }
 
   function flyWord(card, word) {
