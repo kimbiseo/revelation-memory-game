@@ -304,6 +304,10 @@ button {
   z-index: 2;
 }
 
+.cloud-card.visibility-ready.current-target {
+  z-index: 4;
+}
+
 .cloud-card.visibility-ready .cloud-visual,
 .cloud-card.visibility-ready .cloud-art.white,
 .cloud-card.visibility-ready .cloud-word {

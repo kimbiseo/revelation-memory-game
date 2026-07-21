@@ -6,6 +6,9 @@
   const W = 606;
   const CARD_W = 245;
   const CARD_H = 118;
+  const STAGE_ASSET_HEIGHT = 1198;
+  const TOP_CLOUD_OPAQUE_BOTTOM = 224;
+  const GRASS_OPAQUE_TOP = 1088;
   const COLORS = [
     "rgb(3, 126, 219)",
     "rgb(156, 113, 219)",
@@ -173,16 +176,28 @@
     const toLogicalY = (physicalY) => (
       (physicalY - (canvasRect?.top || 0)) / renderedScale
     );
-    const sentenceRect = sentenceWindow?.getBoundingClientRect();
+    const topCloud = gameCanvas?.querySelector(".stage-top-cloud");
+    const grass = gameCanvas?.querySelector(".stage-grass");
+    const topCloudRect = topCloud?.getBoundingClientRect();
+    const grassRect = grass?.getBoundingClientRect();
     const angel = angelZone.querySelector(":scope > .angel-sprite:not(.final-cheer)");
     const angelRect = angel?.getBoundingClientRect();
     const separation = CARD_H * 0.12;
-    let topEdge = sentenceRect?.height
-      ? toLogicalY(sentenceRect.bottom) + separation
+    const topCloudVisibleBottom = topCloudRect?.height
+      ? topCloudRect.top + topCloudRect.height * (TOP_CLOUD_OPAQUE_BOTTOM / STAGE_ASSET_HEIGHT)
+      : 0;
+    const grassVisibleTop = grassRect?.height
+      ? grassRect.top + grassRect.height * (GRASS_OPAQUE_TOP / STAGE_ASSET_HEIGHT)
+      : 0;
+    let topEdge = topCloudRect?.height
+      ? toLogicalY(topCloudVisibleBottom) + separation
       : CARD_H * 0.75;
-    let bottomEdge = angelRect?.height
-      ? toLogicalY(angelRect.top) - separation
-      : logicalHeight - CARD_H * 1.2;
+    const bottomBoundaries = [
+      angelRect?.height ? toLogicalY(angelRect.top) - separation : Infinity,
+      grassRect?.height ? toLogicalY(grassVisibleTop) - separation : Infinity,
+    ];
+    let bottomEdge = Math.min(...bottomBoundaries);
+    if (!Number.isFinite(bottomEdge)) bottomEdge = logicalHeight - CARD_H * 1.2;
 
     topEdge = Math.max(CARD_H / 2, topEdge);
     bottomEdge = Math.min(logicalHeight - CARD_H / 2, bottomEdge);
@@ -318,6 +333,7 @@
 
     const card = {
       id,
+      slotIndex: id,
       centerX,
       centerY,
       el: button,
@@ -370,13 +386,18 @@
   function forceActiveCardVisible(card) {
     if (!card.el.isConnected || card.selected || card.animating) return false;
     card.el.classList.remove("entering", "exiting", "correct", "wrong", "batch-storm", "batch-exit", "respawn");
+    const target = answerCards[state.answerIndex];
+    const isCurrentTarget = Boolean(
+      target && card.targetId === target.id && card.targetIndex === target.sourceIndex,
+    );
     card.el.classList.add("fixed-card", "idle", "visibility-ready");
+    card.el.classList.toggle("current-target", isCurrentTarget);
     card.el.disabled = false;
     card.el.style.opacity = "1";
     card.el.style.visibility = "visible";
     card.el.style.display = "block";
     card.el.style.pointerEvents = "auto";
-    card.el.style.zIndex = "2";
+    card.el.style.zIndex = isCurrentTarget ? "4" : "2";
     const visual = card.el.querySelector(".cloud-visual");
     const whiteCloud = card.el.querySelector(".cloud-art.white");
     [visual, whiteCloud, card.wordEl].forEach((element) => {
@@ -465,6 +486,152 @@
     return true;
   }
 
+  function getCardPlayfieldBounds() {
+    const canvasRect = gameCanvas.getBoundingClientRect();
+    const logicalWidth = gameCanvas?.clientWidth || W;
+    const scale = canvasRect.width / logicalWidth;
+    const topCloud = gameCanvas.querySelector(".stage-top-cloud");
+    const grass = gameCanvas.querySelector(".stage-grass");
+    const topCloudRect = topCloud?.getBoundingClientRect();
+    const grassRect = grass?.getBoundingClientRect();
+    const topCloudBottom = topCloudRect?.height
+      ? topCloudRect.top + topCloudRect.height * (TOP_CLOUD_OPAQUE_BOTTOM / STAGE_ASSET_HEIGHT)
+      : canvasRect.top;
+    const grassTop = grassRect?.height
+      ? grassRect.top + grassRect.height * (GRASS_OPAQUE_TOP / STAGE_ASSET_HEIGHT)
+      : canvasRect.bottom;
+    const safetyGap = CARD_H * 0.12 * scale;
+    return {
+      top: topCloudBottom + safetyGap,
+      bottom: grassTop - safetyGap,
+      left: canvasRect.left,
+      right: canvasRect.right,
+      scale,
+    };
+  }
+
+  function intersectRects(left, right) {
+    const width = Math.max(0, Math.min(left.right, right.right) - Math.max(left.left, right.left));
+    const height = Math.max(0, Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top));
+    return { width, height, area: width * height };
+  }
+
+  function getActiveCardGeometryReport() {
+    const bounds = getCardPlayfieldBounds();
+    const idlePaddingX = 4 * bounds.scale;
+    const idlePaddingY = 7 * bounds.scale;
+    const cards = state.cards.filter((card) => card.el.isConnected && !card.selected);
+    const cardRects = cards.map((card) => {
+      const rect = card.el.getBoundingClientRect();
+      return {
+        card,
+        rect,
+        padded: {
+          left: rect.left - idlePaddingX,
+          right: rect.right + idlePaddingX,
+          top: rect.top - idlePaddingY,
+          bottom: rect.bottom + idlePaddingY,
+        },
+      };
+    });
+    const boundaryIssues = cardRects.filter(({ padded }) => (
+      padded.left < bounds.left - 1
+      || padded.right > bounds.right + 1
+      || padded.top < bounds.top - 1
+      || padded.bottom > bounds.bottom + 1
+    )).map(({ card }) => card.id);
+    const pairOverlaps = [];
+    cardRects.forEach((left, leftIndex) => {
+      cardRects.slice(leftIndex + 1).forEach((right) => {
+        const intersection = intersectRects(left.padded, right.padded);
+        if (intersection.area <= 0) return;
+        const smallerArea = Math.min(
+          left.rect.width * left.rect.height,
+          right.rect.width * right.rect.height,
+        );
+        pairOverlaps.push({
+          leftId: left.card.id,
+          rightId: right.card.id,
+          overlapRatio: smallerArea > 0 ? intersection.area / smallerArea : 1,
+        });
+      });
+    });
+    const target = answerCards[state.answerIndex];
+    const targetEntry = cardRects.find(({ card }) => (
+      target && card.targetId === target.id && card.targetIndex === target.sourceIndex
+    ));
+    const targetOverlapRatio = targetEntry
+      ? Math.max(0, ...cardRects.filter((entry) => entry !== targetEntry).map((entry) => {
+          const intersection = intersectRects(targetEntry.rect, entry.rect);
+          const targetArea = targetEntry.rect.width * targetEntry.rect.height;
+          return targetArea > 0 ? intersection.area / targetArea : 1;
+        }))
+      : 1;
+    const targetWordRect = targetEntry?.card.wordEl.getBoundingClientRect();
+    const targetTextVisible = Boolean(
+      targetEntry
+      && targetWordRect
+      && targetWordRect.left >= bounds.left - 1
+      && targetWordRect.right <= bounds.right + 1
+      && targetWordRect.top >= bounds.top - 1
+      && targetWordRect.bottom <= bounds.bottom + 1
+    );
+    return {
+      bounds,
+      cardCount: cards.length,
+      boundaryIssues,
+      pairOverlaps,
+      targetOverlapRatio,
+      targetTextVisible,
+      targetCardId: targetEntry?.card.id ?? null,
+      valid: boundaryIssues.length === 0
+        && pairOverlaps.length === 0
+        && targetOverlapRatio < 0.2
+        && targetTextVisible,
+    };
+  }
+
+  function cardGeometryScore(report) {
+    return report.boundaryIssues.length * 1000
+      + report.pairOverlaps.reduce((total, overlap) => total + 100 + overlap.overlapRatio * 100, 0)
+      + (report.targetOverlapRatio >= 0.2 ? 500 : 0)
+      + (report.targetTextVisible ? 0 : 500);
+  }
+
+  function repairCardSlotCollisions() {
+    if (!usesMobileLayout() || state.final) return getActiveCardGeometryReport();
+    let report = getActiveCardGeometryReport();
+    let score = cardGeometryScore(report);
+    for (let pass = 0; pass < 4 && score > 0; pass += 1) {
+      let bestSwap = null;
+      let bestScore = score;
+      for (let leftIndex = 0; leftIndex < state.cards.length - 1; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < state.cards.length; rightIndex += 1) {
+          const left = state.cards[leftIndex];
+          const right = state.cards[rightIndex];
+          [left.slotIndex, right.slotIndex] = [right.slotIndex, left.slotIndex];
+          applyMobileGeometry();
+          const candidateScore = cardGeometryScore(getActiveCardGeometryReport());
+          [left.slotIndex, right.slotIndex] = [right.slotIndex, left.slotIndex];
+          applyMobileGeometry();
+          if (candidateScore < bestScore) {
+            bestScore = candidateScore;
+            bestSwap = [left, right];
+          }
+        }
+      }
+      if (!bestSwap) break;
+      [bestSwap[0].slotIndex, bestSwap[1].slotIndex] = [bestSwap[1].slotIndex, bestSwap[0].slotIndex];
+      applyMobileGeometry();
+      report = getActiveCardGeometryReport();
+      score = cardGeometryScore(report);
+    }
+    state.cards.forEach(forceActiveCardVisible);
+    stage.dataset.cardOverlapCount = String(report.pairOverlaps.length);
+    stage.dataset.cardBoundaryIssueCount = String(report.boundaryIssues.length);
+    return report;
+  }
+
   function createDecorativeCloud(left, top, width, stretch) {
     const decorationIndex = state.decorations.length;
     const cloud = document.createElement("span");
@@ -533,7 +700,7 @@
     const logicalWidth = gameCanvas?.clientWidth || W;
     const sideGutter = logicalWidth * 0.02;
     state.cards.forEach((card, index) => {
-      const [centerX, centerY] = slots[index];
+      const [centerX, centerY] = slots[card.slotIndex ?? index];
       const unclampedX = centerX - card.width / 2;
       const x = Math.min(
         logicalWidth - sideGutter - card.width,
@@ -719,6 +886,7 @@
     if (!valid && repair) {
       ensureCurrentAnswerCard();
       applyMobileGeometry();
+      repairCardSlotCollisions();
       return validateMobileBatch({ repair: false });
     }
 
@@ -828,6 +996,7 @@
     state.locked = true;
     state.cards.forEach((card, index) => {
       const entry = batch.entries[index];
+      card.slotIndex = card.id;
       setCardWord(card, entry, card.colorIndex);
       card.animating = false;
       card.selected = false;
@@ -880,6 +1049,7 @@
         state.cards.forEach(forceActiveCardVisible);
         enforceActiveCardVisibility();
         applyMobileGeometry();
+        repairCardSlotCollisions();
         if (usesMobileLayout()) validateMobileBatch();
         updateHint();
         armIdleReminder();
@@ -1541,6 +1711,7 @@
       && angel.getBoundingClientRect().width > 0
       && angel.getBoundingClientRect().height > 0
     );
+    const geometry = state.final ? null : getActiveCardGeometryReport();
     return {
       batchToken: state.batchToken,
       activeCardCount: activeCards.length,
@@ -1553,6 +1724,7 @@
       cardVisibilityRepairCount: state.cardVisibilityRepairCount,
       angelVisibilityRepairCount: state.angelVisibilityRepairCount,
       pendingBatchTimerCount: state.batchTimers.size,
+      geometry,
     };
   };
   createCards();
