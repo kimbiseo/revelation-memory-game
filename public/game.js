@@ -130,6 +130,11 @@
     staleTimerMutationCount: 0,
     cardVisibilityRepairCount: 0,
     angelVisibilityRepairCount: 0,
+    batchPublished: false,
+    batchSettled: false,
+    batchPublicationRetryCount: 0,
+    postPublishContentMutationCount: 0,
+    postPublishGeometryMutationCount: 0,
   };
 
   const bgm = new Audio("/assets/audio/game-bgm.mp3");
@@ -598,8 +603,10 @@
       + (report.targetTextVisible ? 0 : 500);
   }
 
-  function repairCardSlotCollisions() {
-    if (!usesMobileLayout() || state.final) return getActiveCardGeometryReport();
+  function repairCardSlotCollisions({ allowPublished = false } = {}) {
+    if (!usesMobileLayout() || state.final || (state.batchPublished && !allowPublished)) {
+      return getActiveCardGeometryReport();
+    }
     let report = getActiveCardGeometryReport();
     let score = cardGeometryScore(report);
     for (let pass = 0; pass < 4 && score > 0; pass += 1) {
@@ -694,8 +701,8 @@
     });
   }
 
-  function applyMobileGeometry() {
-    if (!usesMobileLayout() || state.final) return;
+  function applyMobileGeometry({ allowPublished = false } = {}) {
+    if (!usesMobileLayout() || state.final || (state.batchPublished && !allowPublished)) return;
     const slots = getMobileSlots();
     const logicalWidth = gameCanvas?.clientWidth || W;
     const sideGutter = logicalWidth * 0.02;
@@ -722,21 +729,28 @@
   }
 
   let mobileLayoutFrame = 0;
-  function scheduleMobileGeometry() {
+  function scheduleMobileGeometry(allowPublished = false) {
     if (!usesMobileLayout()) return;
+    const mayUpdatePublishedBatch = allowPublished === true;
     window.cancelAnimationFrame(mobileLayoutFrame);
     mobileLayoutFrame = window.requestAnimationFrame(() => {
       mobileLayoutFrame = window.requestAnimationFrame(() => {
-        applyMobileGeometry();
+        applyMobileGeometry({ allowPublished: mayUpdatePublishedBatch });
         const cardsAreVisible = state.cards.length === 11 && state.cards.every(
           (card) => Number(getComputedStyle(card.el).opacity) > 0,
         );
-        if (cardsAreVisible && !state.final) validateMobileBatch();
+        if (cardsAreVisible && state.batchPublished && state.batchSettled && !state.final) {
+          validateMobileBatch();
+        }
       });
     });
   }
 
   function setCardWord(card, entry, colorIndex) {
+    if (state.batchPublished) {
+      state.postPublishContentMutationCount += 1;
+      return false;
+    }
     const normalizedWord = normalizeText(entry.word);
     card.word = normalizedWord;
     card.targetIndex = Number.isInteger(entry.targetIndex) ? entry.targetIndex : null;
@@ -763,6 +777,7 @@
     if (card.targetId === null) delete card.el.dataset.targetId;
     else card.el.dataset.targetId = card.targetId;
     card.el.setAttribute("aria-label", `구름 카드: ${normalizedWord}`);
+    return true;
   }
 
   function ensureCurrentAnswerCard() {
@@ -772,6 +787,7 @@
       card.targetId === target.id && card.targetIndex === target.sourceIndex
     ));
     if (!targetCard) {
+      if (state.batchPublished) return null;
       targetCard = state.cards.find((card) => card.targetId === null) || state.cards[0];
       setCardWord(targetCard, {
         word: target.word,
@@ -873,7 +889,9 @@
       && canvasRect.top >= visibleBounds.top - 1
       && canvasRect.bottom <= visibleBounds.bottom + 1
     );
-    const valid = currentCards.length === 11
+    const valid = state.batchPublished
+      && state.batchSettled
+      && currentCards.length === 11
       && wordsValid
       && (!target || targetCards.length === 1)
       && targetInteractive
@@ -883,7 +901,7 @@
       && stageFillsVisibleViewport
       && canvasFitsVisibleViewport;
 
-    if (!valid && repair) {
+    if (!valid && repair && !state.batchPublished) {
       ensureCurrentAnswerCard();
       applyMobileGeometry();
       repairCardSlotCollisions();
@@ -985,8 +1003,120 @@
     state.chunkIndex = target.verseCardIndex;
   }
 
+  function preparedBatchReport() {
+    const target = answerCards[state.answerIndex];
+    const targetCard = state.cards.find((card) => (
+      target && card.targetId === target.id && card.targetIndex === target.sourceIndex
+    ));
+    const targetStyle = targetCard ? getComputedStyle(targetCard.el) : null;
+    const targetImage = targetCard?.el.querySelector(".cloud-art.white");
+    const targetImageStyle = targetImage ? getComputedStyle(targetImage) : null;
+    const geometry = getActiveCardGeometryReport();
+    const hiddenCards = state.cards.map(cardVisibilityIssue).filter(Boolean);
+    const targetReady = Boolean(
+      targetCard
+      && targetStyle
+      && targetStyle.display !== "none"
+      && targetStyle.visibility === "visible"
+      && Number(targetStyle.opacity) >= 0.99
+      && targetStyle.pointerEvents !== "none"
+      && !targetCard.el.disabled
+      && normalizeText(targetCard.wordEl.textContent) === normalizeText(target?.word)
+      && targetImage
+      && targetImage.complete
+      && targetImage.naturalWidth > 0
+      && targetImageStyle.display !== "none"
+      && targetImageStyle.visibility === "visible"
+      && Number(targetImageStyle.opacity) >= 0.99
+    );
+    return {
+      valid: state.cards.length === 11
+        && hiddenCards.length === 0
+        && targetReady
+        && geometry.valid,
+      targetReady,
+      hiddenCardCount: hiddenCards.length,
+      geometry,
+    };
+  }
+
+  function waitForCardImages() {
+    const images = state.cards.flatMap((card) => (
+      [...card.el.querySelectorAll("img")]
+    ));
+    return Promise.all(images.map((image) => {
+      if (image.complete && image.naturalWidth > 0) return Promise.resolve();
+      return image.decode?.().catch(() => undefined) || Promise.resolve();
+    }));
+  }
+
+  function publishPreparedBatch(token) {
+    if (token !== state.batchToken || state.final) return;
+    const report = preparedBatchReport();
+    if (!report.valid) {
+      state.batchPublicationRetryCount += 1;
+      setBatchTimeout(populateCards, 80, token);
+      return;
+    }
+
+    const currentTarget = answerCards[state.answerIndex];
+    const entranceOrder = [...state.cards].sort((left, right) => {
+      const leftIsTarget = left.targetId === currentTarget?.id ? 1 : 0;
+      const rightIsTarget = right.targetId === currentTarget?.id ? 1 : 0;
+      return rightIsTarget - leftIsTarget || left.id - right.id;
+    });
+    entranceOrder.forEach((card, index) => {
+      card.el.classList.remove("idle", "visibility-ready");
+      card.el.classList.add("entering");
+      card.el.style.animationDelay = `${index * 50}ms`;
+      card.el.style.animationPlayState = "paused";
+    });
+    state.decorations.forEach((cloud, index) => {
+      cloud.style.opacity = "";
+      cloud.className = "decorative-cloud show entering";
+      cloud.style.animationDelay = `${25 + index * 65}ms`;
+      cloud.style.animationPlayState = "paused";
+    });
+
+    state.batchPublished = true;
+    laneLayer.classList.remove("batch-preparing");
+    void laneLayer.offsetWidth;
+    entranceOrder.forEach((card, index) => {
+      card.el.style.animationPlayState = "running";
+      setBatchTimeout(() => {
+        card.el.classList.remove("entering");
+        card.el.style.removeProperty("animation-delay");
+        card.el.style.removeProperty("animation-play-state");
+        card.el.classList.add("idle", "visibility-ready");
+        forceActiveCardVisible(card);
+      }, 500 + index * 50, token);
+    });
+    state.decorations.forEach((cloud, index) => {
+      cloud.style.animationPlayState = "running";
+      setBatchTimeout(() => {
+        cloud.classList.remove("entering");
+        cloud.style.removeProperty("animation-delay");
+        cloud.style.removeProperty("animation-play-state");
+        cloud.classList.add("idle");
+      }, 510 + index * 65, token);
+    });
+    playFx("cloudEntrance", 0, 0.8);
+
+    setBatchTimeout(() => {
+      state.locked = false;
+      state.batchSettled = true;
+      const finalReport = preparedBatchReport();
+      stage.dataset.mobileBatchValid = finalReport.valid ? "true" : "false";
+      updateHint();
+      armIdleReminder();
+    }, Math.max(state.cards.length * 50 + 520, state.decorations.length * 65 + 540), token);
+  }
+
   function populateCards() {
     clearBatchTimers();
+    state.batchPublished = false;
+    state.batchSettled = false;
+    laneLayer.classList.add("batch-preparing");
     const token = ++state.batchToken;
     setAngel("idle");
     if (usesMobileLayout()) stage.dataset.mobileBatchValid = "false";
@@ -997,64 +1127,26 @@
     state.cards.forEach((card, index) => {
       const entry = batch.entries[index];
       card.slotIndex = card.id;
-      setCardWord(card, entry, card.colorIndex);
       card.animating = false;
       card.selected = false;
       resetCardVisualState(card);
+      setCardWord(card, entry, card.colorIndex);
     });
     ensureCurrentAnswerCard();
     applyMobileGeometry();
-    const decorationsNeedEntrance = state.decorations.some((cloud) => !cloud.classList.contains("show"));
-    if (decorationsNeedEntrance) {
-      state.decorations.forEach((cloud) => {
-        cloud.className = "decorative-cloud";
-        cloud.style.opacity = "0";
-      });
-    }
+    repairCardSlotCollisions();
+    state.cards.forEach(forceActiveCardVisible);
+    state.decorations.forEach((cloud) => {
+      cloud.className = "decorative-cloud";
+      cloud.style.opacity = "0";
+      cloud.style.removeProperty("animation-delay");
+      cloud.style.removeProperty("animation-play-state");
+    });
     updateHint();
-    setBatchTimeout(() => {
-      playFx("cloudEntrance", 0, 0.8);
-      if (decorationsNeedEntrance) {
-        state.decorations.forEach((cloud, index) => {
-          setBatchTimeout(() => {
-            cloud.style.opacity = "";
-            cloud.classList.add("show", "entering");
-            setBatchTimeout(() => {
-              cloud.classList.remove("entering");
-              cloud.classList.add("idle");
-            }, 480, token);
-          }, 25 + index * 65, token);
-        });
-      }
-      const currentTarget = answerCards[state.answerIndex];
-      const entranceOrder = [...state.cards].sort((left, right) => {
-        const leftIsTarget = left.targetId === currentTarget?.id ? 1 : 0;
-        const rightIsTarget = right.targetId === currentTarget?.id ? 1 : 0;
-        return rightIsTarget - leftIsTarget || left.id - right.id;
-      });
-      entranceOrder.forEach((card, index) => {
-        setBatchTimeout(() => {
-          card.el.style.opacity = "1";
-          card.el.classList.add("entering");
-          setBatchTimeout(() => {
-            card.el.classList.remove("entering");
-            card.el.classList.add("idle", "visibility-ready");
-            forceActiveCardVisible(card);
-          }, 480, token);
-        }, index * 50, token);
-      });
-      setBatchTimeout(() => {
-        state.locked = false;
-        ensureCurrentAnswerCard();
-        state.cards.forEach(forceActiveCardVisible);
-        enforceActiveCardVisibility();
-        applyMobileGeometry();
-        repairCardSlotCollisions();
-        if (usesMobileLayout()) validateMobileBatch();
-        updateHint();
-        armIdleReminder();
-      }, state.cards.length * 50 + 500, token);
-    }, 200, token);
+    waitForCardImages().then(() => {
+      if (token !== state.batchToken) return;
+      setBatchTimeout(() => publishPreparedBatch(token), 200, token);
+    });
   }
 
   function startBgm() {
@@ -1686,8 +1778,8 @@
       startBgm();
     }
   });
-  window.addEventListener("resize", scheduleMobileGeometry, { passive: true });
-  window.visualViewport?.addEventListener("resize", scheduleMobileGeometry, { passive: true });
+  window.addEventListener("resize", () => scheduleMobileGeometry(true), { passive: true });
+  window.visualViewport?.addEventListener("resize", () => scheduleMobileGeometry(true), { passive: true });
   window.setInterval(() => {
     if (!state.paused && !state.final) {
       enforceAngelVisibility();
@@ -1714,6 +1806,8 @@
     const geometry = state.final ? null : getActiveCardGeometryReport();
     return {
       batchToken: state.batchToken,
+      batchPublished: state.batchPublished,
+      batchSettled: state.batchSettled,
       activeCardCount: activeCards.length,
       hiddenActiveCardCount: cardIssues.length,
       cardIssues,
@@ -1724,6 +1818,20 @@
       cardVisibilityRepairCount: state.cardVisibilityRepairCount,
       angelVisibilityRepairCount: state.angelVisibilityRepairCount,
       pendingBatchTimerCount: state.batchTimers.size,
+      batchPublicationRetryCount: state.batchPublicationRetryCount,
+      postPublishContentMutationCount: state.postPublishContentMutationCount,
+      postPublishGeometryMutationCount: state.postPublishGeometryMutationCount,
+      cards: activeCards.map((card) => ({
+        id: card.id,
+        text: card.wordEl.textContent,
+        slotIndex: card.slotIndex,
+        left: card.el.style.left,
+        top: card.el.style.top,
+        opacity: getComputedStyle(card.el).opacity,
+        visibility: getComputedStyle(card.el).visibility,
+        display: getComputedStyle(card.el).display,
+        pointerEvents: getComputedStyle(card.el).pointerEvents,
+      })),
       geometry,
     };
   };

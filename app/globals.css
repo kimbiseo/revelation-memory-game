@@ -212,6 +212,11 @@ button {
   z-index: 3;
 }
 
+#lane-layer.batch-preparing {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .lane-guide {
   position: absolute;
   left: 0;
