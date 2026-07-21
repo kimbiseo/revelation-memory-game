@@ -13,6 +13,20 @@
     "rgb(5, 198, 198)",
     "rgb(5, 165, 138)",
   ];
+  const MOBILE_SLOT_TEMPLATE = [
+    [303, 2], [153, 1], [453, 3], [453, 1], [153, 3],
+    [153, 0], [453, 4], [453, 0], [153, 4], [153, 5],
+    [453, 5],
+  ];
+  const MOBILE_DECORATIONS = [
+    [-112, 190, 160, 0.72], [558, 205, 160, 0.72],
+    [-115, 470, 164, 0.74], [557, 492, 164, 0.74],
+    [-112, 742, 160, 0.72], [558, 760, 160, 0.72],
+    [-109, 1015, 156, 0.7], [559, 1030, 156, 0.7],
+  ];
+  const MOBILE_CARD_SIDE_GUTTER = 12;
+  const MOBILE_CARD_TOP = 210;
+  const MOBILE_CARD_BOTTOM_RESERVE = 245;
 
   // User-authored final card data. Keep every card boundary and spelling intact.
   const verseChunks = [
@@ -52,6 +66,7 @@
   };
 
   const stage = document.getElementById("game-stage");
+  const gameCanvas = document.getElementById("game-canvas");
   const laneLayer = document.getElementById("lane-layer");
   const sentenceLines = document.getElementById("sentence-lines");
   const sentenceWindow = document.getElementById("sentence-window");
@@ -123,6 +138,37 @@
     sound.src = src;
     return [name, sound];
   }));
+
+  function usesMobileLayout() {
+    return stage.dataset.mobileLayout === "true";
+  }
+
+  function getMobileSlots() {
+    const logicalWidth = gameCanvas?.clientWidth || W;
+    const logicalHeight = gameCanvas?.clientHeight || 1198;
+    const firstRow = MOBILE_CARD_TOP + CARD_H / 2;
+    const bottomEdge = Math.min(965, logicalHeight - MOBILE_CARD_BOTTOM_RESERVE);
+    const lastRow = Math.max(firstRow + CARD_H * 5, bottomEdge - CARD_H / 2);
+    const rowGap = (lastRow - firstRow) / 5;
+    const leftCenter = logicalWidth * 0.2525;
+    const rightCenter = logicalWidth * 0.7475;
+    const center = logicalWidth / 2;
+    return MOBILE_SLOT_TEMPLATE.map(([templateX, row]) => [
+      templateX === 303 ? center : (templateX < 303 ? leftCenter : rightCenter),
+      firstRow + row * rowGap,
+    ]);
+  }
+
+  function getMobileDecorations() {
+    const logicalHeight = gameCanvas?.clientHeight || 1198;
+    const lastDecorationTop = Math.max(900, logicalHeight - 188);
+    return MOBILE_DECORATIONS.map(([left, top, width, stretch], index) => [
+      left,
+      index >= 6 ? Math.min(top, lastDecorationTop + (index % 2) * 15) : top,
+      width,
+      stretch,
+    ]);
+  }
 
   function normalizeText(value) {
     return String(value ?? "")
@@ -231,6 +277,7 @@
       distractorIndex: definition.distractorIndex,
       targetIndex: null,
       targetId: null,
+      width: CARD_W,
       animating: false,
       selected: false,
     };
@@ -269,31 +316,75 @@
     laneLayer.innerHTML = "";
     state.cards = [];
     state.decorations = [];
-    [
+    const desktopDecorations = [
       [-118, 188, 185, 0.82], [533, 205, 185, 0.82],
       [-130, 468, 195, 0.88], [540, 505, 182, 0.8],
       [-126, 690, 188, 0.84], [538, 666, 190, 0.84],
       [-118, 890, 176, 0.76], [545, 915, 180, 0.78],
-    ].forEach(([left, top, width, stretch]) => {
+    ];
+    (usesMobileLayout() ? getMobileDecorations() : desktopDecorations).forEach(([left, top, width, stretch]) => {
       createDecorativeCloud(left, top, width, stretch);
     });
 
-    const fallbackSlots = [
+    const desktopSlots = [
       [303, 570], [160, 420], [446, 720], [446, 420], [160, 720],
       [160, 270], [446, 870], [446, 270], [160, 870], [160, 1020],
       [446, 1020],
     ];
-    const definitions = bootstrapCards.length === 11
-      ? bootstrapCards
-      : fallbackSlots.map(([centerX, centerY], id) => ({
+    const selectedSlots = usesMobileLayout() ? getMobileSlots() : desktopSlots;
+    const definitions = selectedSlots.map(([centerX, centerY], id) => {
+      const bootstrap = bootstrapCards[id];
+      return {
           id,
           centerX,
           centerY,
-          colorIndex: id % COLORS.length,
-          distractorIndex: id * 11 + 7,
-        }));
+          colorIndex: bootstrap?.colorIndex ?? id % COLORS.length,
+          distractorIndex: bootstrap?.distractorIndex ?? id * 11 + 7,
+        };
+    });
     definitions.forEach((definition) => {
       state.cards.push(createCloudCard(definition));
+    });
+  }
+
+  function applyMobileGeometry() {
+    if (!usesMobileLayout() || state.final) return;
+    const slots = getMobileSlots();
+    const logicalWidth = gameCanvas?.clientWidth || W;
+    state.cards.forEach((card, index) => {
+      const [centerX, centerY] = slots[index];
+      const unclampedX = centerX - card.width / 2;
+      const x = Math.min(
+        logicalWidth - MOBILE_CARD_SIDE_GUTTER - card.width,
+        Math.max(MOBILE_CARD_SIDE_GUTTER, unclampedX),
+      );
+      card.centerX = x + card.width / 2;
+      card.centerY = centerY;
+      card.x = x;
+      card.top = centerY - CARD_H / 2;
+      card.el.style.left = `${card.x}px`;
+      card.el.style.top = `${card.top}px`;
+    });
+    const decorations = getMobileDecorations();
+    state.decorations.forEach((cloud, index) => {
+      const [left, top] = decorations[index];
+      cloud.style.left = `${left}px`;
+      cloud.style.top = `${top}px`;
+    });
+  }
+
+  let mobileLayoutFrame = 0;
+  function scheduleMobileGeometry() {
+    if (!usesMobileLayout()) return;
+    window.cancelAnimationFrame(mobileLayoutFrame);
+    mobileLayoutFrame = window.requestAnimationFrame(() => {
+      mobileLayoutFrame = window.requestAnimationFrame(() => {
+        applyMobileGeometry();
+        const cardsAreVisible = state.cards.length === 11 && state.cards.every(
+          (card) => Number(getComputedStyle(card.el).opacity) > 0,
+        );
+        if (cardsAreVisible && !state.final) validateMobileBatch();
+      });
     });
   }
 
@@ -308,9 +399,12 @@
     if (length > 7) card.wordEl.classList.add("small");
     else if (length > 5) card.wordEl.classList.add("medium");
     card.el.style.setProperty("--cloud-color", COLORS[colorIndex % COLORS.length]);
-    const width = Math.max(164, Math.min(278, 142 + length * 17));
+    const width = usesMobileLayout()
+      ? Math.max(172, Math.min(290, 148 + length * 18))
+      : Math.max(164, Math.min(278, 142 + length * 17));
     card.x = card.centerX - width / 2;
     card.top = card.centerY - CARD_H / 2;
+    card.width = width;
     card.el.style.left = `${card.x}px`;
     card.el.style.top = `${card.top}px`;
     card.el.style.setProperty("--card-width", `${width}px`);
@@ -321,6 +415,149 @@
     if (card.targetId === null) delete card.el.dataset.targetId;
     else card.el.dataset.targetId = card.targetId;
     card.el.setAttribute("aria-label", `구름 카드: ${normalizedWord}`);
+  }
+
+  function ensureCurrentAnswerCard() {
+    const target = answerCards[state.answerIndex];
+    if (!target || state.cards.length === 0) return null;
+    let targetCard = state.cards.find((card) => (
+      card.targetId === target.id && card.targetIndex === target.sourceIndex
+    ));
+    if (!targetCard) {
+      targetCard = state.cards.find((card) => card.targetId === null) || state.cards[0];
+      setCardWord(targetCard, {
+        word: target.word,
+        targetId: target.id,
+        targetIndex: target.sourceIndex,
+      }, targetCard.colorIndex);
+    }
+    targetCard.el.disabled = false;
+    return targetCard;
+  }
+
+  function cardRectIsUsable(card, viewportRect, topLimit, bottomLimit) {
+    const rect = card.el.getBoundingClientRect();
+    const epsilon = 1;
+    return rect.width > 0
+      && rect.height > 0
+      && rect.left >= viewportRect.left - epsilon
+      && rect.right <= viewportRect.right + epsilon
+      && rect.top >= topLimit - epsilon
+      && rect.bottom <= bottomLimit + epsilon;
+  }
+
+  function validateMobileBatch({ repair = true } = {}) {
+    const target = answerCards[state.answerIndex];
+    const viewportRect = stage.getBoundingClientRect();
+    const canvasRect = gameCanvas.getBoundingClientRect();
+    const scale = canvasRect.width / (gameCanvas?.clientWidth || W);
+    const topLimit = viewportRect.top + MOBILE_CARD_TOP * scale;
+    const bottomLimit = viewportRect.bottom - MOBILE_CARD_BOTTOM_RESERVE * scale;
+    const currentCards = state.cards.filter((card) => card.el.isConnected);
+    const targetCards = target
+      ? currentCards.filter((card) => (
+          card.targetId === target.id && card.targetIndex === target.sourceIndex
+        ))
+      : [];
+    const targetStyle = targetCards.length === 1 ? getComputedStyle(targetCards[0].el) : null;
+    const targetInteractive = !target || (
+      targetCards.length === 1
+      && !targetCards[0].el.disabled
+      && targetStyle.display !== "none"
+      && targetStyle.visibility !== "hidden"
+      && Number(targetStyle.opacity) > 0
+    );
+    const wordsValid = currentCards.every((card) => normalizeText(card.word).length > 0);
+    const geometryValid = currentCards.every((card) => (
+      cardRectIsUsable(card, viewportRect, topLimit, bottomLimit)
+    ));
+    const rects = currentCards.map((card) => card.el.getBoundingClientRect());
+    const nonOverlapping = rects.every((leftRect, leftIndex) => (
+      rects.slice(leftIndex + 1).every((rightRect) => !(
+        leftRect.left < rightRect.right - 1
+        && leftRect.right > rightRect.left + 1
+        && leftRect.top < rightRect.bottom - 1
+        && leftRect.bottom > rightRect.top + 1
+      ))
+    ));
+    const visibleViewport = window.visualViewport;
+    const visibleBounds = {
+      left: visibleViewport?.offsetLeft ?? 0,
+      top: visibleViewport?.offsetTop ?? 0,
+      right: (visibleViewport?.offsetLeft ?? 0) + (visibleViewport?.width ?? window.innerWidth),
+      bottom: (visibleViewport?.offsetTop ?? 0) + (visibleViewport?.height ?? window.innerHeight),
+    };
+    const insideVisibleBounds = (rect) => (
+      rect.left >= visibleBounds.left - 1
+      && rect.right <= visibleBounds.right + 1
+      && rect.top >= visibleBounds.top - 1
+      && rect.bottom <= visibleBounds.bottom + 1
+    );
+    const angel = angelZone.querySelector(":scope > .angel-sprite:not(.final-cheer)");
+    const lowerElements = {
+      angel: angel ? insideVisibleBounds(angel.getBoundingClientRect()) : false,
+      hint: hintWord ? insideVisibleBounds(hintWord.getBoundingClientRect()) : false,
+      menu: menuButton ? insideVisibleBounds(menuButton.getBoundingClientRect()) : false,
+      grass: false,
+    };
+    const grassRect = document.querySelector(".stage-grass")?.getBoundingClientRect();
+    lowerElements.grass = Boolean(
+      grassRect
+      && grassRect.bottom >= visibleBounds.bottom - 1
+      && grassRect.bottom <= visibleBounds.bottom + 1
+      && grassRect.left >= visibleBounds.left - 1
+      && grassRect.right <= visibleBounds.right + 1
+    );
+    const lowerElementsVisible = Object.values(lowerElements).every(Boolean);
+    const stageFillsVisibleViewport = (
+      Math.abs(viewportRect.left - visibleBounds.left) <= 1
+      && Math.abs(viewportRect.right - visibleBounds.right) <= 1
+      && Math.abs(viewportRect.top - visibleBounds.top) <= 1
+      && Math.abs(viewportRect.bottom - visibleBounds.bottom) <= 1
+    );
+    const canvasFitsVisibleViewport = (
+      canvasRect.left >= visibleBounds.left - 1
+      && canvasRect.right <= visibleBounds.right + 1
+      && canvasRect.top >= visibleBounds.top - 1
+      && canvasRect.bottom <= visibleBounds.bottom + 1
+    );
+    const valid = currentCards.length === 11
+      && wordsValid
+      && (!target || targetCards.length === 1)
+      && targetInteractive
+      && geometryValid
+      && nonOverlapping
+      && lowerElementsVisible
+      && stageFillsVisibleViewport
+      && canvasFitsVisibleViewport;
+
+    if (!valid && repair) {
+      ensureCurrentAnswerCard();
+      applyMobileGeometry();
+      return validateMobileBatch({ repair: false });
+    }
+
+    stage.dataset.mobileBatchValid = valid ? "true" : "false";
+    stage.dataset.mobileCardCount = String(currentCards.length);
+    stage.dataset.mobileTargetVisible = targetInteractive ? "true" : "false";
+    stage.dataset.mobileLowerUiVisible = lowerElementsVisible ? "true" : "false";
+    return {
+      valid,
+      cardCount: currentCards.length,
+      targetVisible: targetInteractive,
+      wordsValid,
+      geometryValid,
+      nonOverlapping,
+      lowerElements,
+      stageFillsVisibleViewport,
+      canvasFitsVisibleViewport,
+      visualViewport: {
+        width: visibleBounds.right - visibleBounds.left,
+        height: visibleBounds.bottom - visibleBounds.top,
+        offsetLeft: visibleBounds.left,
+        offsetTop: visibleBounds.top,
+      },
+    };
   }
 
   function shuffle(values) {
@@ -397,6 +634,7 @@
 
   function populateCards() {
     const token = ++state.batchToken;
+    if (usesMobileLayout()) stage.dataset.mobileBatchValid = "false";
     const batch = getBatchWords();
     state.batchTargetCount = batch.targetCount;
     state.batchCorrectCount = 0;
@@ -410,6 +648,8 @@
       card.el.style.opacity = "0";
       card.el.disabled = false;
     });
+    ensureCurrentAnswerCard();
+    applyMobileGeometry();
     const decorationsNeedEntrance = state.decorations.some((cloud) => !cloud.classList.contains("show"));
     if (decorationsNeedEntrance) {
       state.decorations.forEach((cloud) => {
@@ -435,7 +675,13 @@
           }, 25 + index * 65);
         });
       }
-      state.cards.forEach((card, index) => {
+      const currentTarget = answerCards[state.answerIndex];
+      const entranceOrder = [...state.cards].sort((left, right) => {
+        const leftIsTarget = left.targetId === currentTarget?.id ? 1 : 0;
+        const rightIsTarget = right.targetId === currentTarget?.id ? 1 : 0;
+        return rightIsTarget - leftIsTarget || left.id - right.id;
+      });
+      entranceOrder.forEach((card, index) => {
         window.setTimeout(() => {
           if (token !== state.batchToken) return;
           card.el.style.opacity = "1";
@@ -450,6 +696,9 @@
       window.setTimeout(() => {
         if (token !== state.batchToken) return;
         state.locked = false;
+        ensureCurrentAnswerCard();
+        applyMobileGeometry();
+        if (usesMobileLayout()) validateMobileBatch();
         updateHint();
         armIdleReminder();
       }, state.cards.length * 50 + 500);
@@ -632,22 +881,29 @@
       state.cheerTimer = 0;
     }
     let wrap = angelZone.querySelector(":scope > .angel-sprite:not(.final-cheer)");
-    let image = wrap?.querySelector("img");
-    if (!wrap || !image || angelZone.children.length !== 1) {
+    if (!wrap) {
       wrap = document.createElement("span");
-      image = document.createElement("img");
-      image.alt = "";
-      image.draggable = false;
-      wrap.appendChild(image);
+      [
+        ["idle", "angel_idle.png"],
+        ["smile", "angel_happy.png"],
+        ["heart", "angel_fullbody.png"],
+        ["cry", "angel_cry.png"],
+      ].forEach(([frame, file]) => {
+        const image = document.createElement("img");
+        image.className = `angel-frame angel-frame-${frame}`;
+        image.src = `/assets/images/${file}`;
+        image.alt = "";
+        image.draggable = false;
+        wrap.appendChild(image);
+      });
       angelZone.replaceChildren(wrap);
     }
     wrap.className = "angel-sprite";
     wrap.style.left = "12px";
-    let file = "angel_idle.png";
-    if (type === "smile") file = "angel_happy.png";
-    if (type === "heart" || type === "cheer") file = "angel_fullbody.png";
-    if (type === "cry") file = "angel_cry.png";
-    image.src = `/assets/images/${file}`;
+    const activeFrame = type === "cheer" ? "heart" : type;
+    wrap.querySelectorAll(".angel-frame").forEach((image) => {
+      image.classList.toggle("active", image.classList.contains(`angel-frame-${activeFrame}`));
+    });
     if (type === "heart" || type === "cheer") {
       wrap.classList.add("fullbody-heart", "milestone-jump");
     }
@@ -835,10 +1091,20 @@
   }
 
   function renderFinalAngels() {
-    angelZone.innerHTML = "";
+    const primaryAngel = angelZone.querySelector(":scope > .angel-sprite:not(.final-cheer)");
     const positions = [12, 132, 252, 372, 492];
     const delays = [0, 140, 280, 80, 220];
-    positions.forEach((left, index) => {
+    if (primaryAngel) {
+      primaryAngel.className = "angel-sprite fullbody-heart final-cheer";
+      primaryAngel.style.left = `${positions[0]}px`;
+      primaryAngel.style.animationDelay = `${delays[0]}ms`;
+      primaryAngel.querySelectorAll(".angel-frame").forEach((image) => {
+        image.classList.toggle("active", image.classList.contains("angel-frame-heart"));
+      });
+    }
+    const fragment = document.createDocumentFragment();
+    positions.slice(primaryAngel ? 1 : 0).forEach((left, offset) => {
+      const index = offset + (primaryAngel ? 1 : 0);
       const wrap = document.createElement("span");
       wrap.className = "angel-sprite fullbody-heart final-cheer";
       wrap.style.left = `${left}px`;
@@ -848,16 +1114,18 @@
       image.alt = "";
       image.draggable = false;
       wrap.appendChild(image);
-      angelZone.appendChild(wrap);
+      fragment.appendChild(wrap);
     });
+    angelZone.appendChild(fragment);
   }
 
   function renderAmenPopcorn() {
     const angelCenters = [61, 181, 301, 421, 541];
+    const amenBaseTop = Math.max(1012, (gameCanvas?.clientHeight || 1198) - 186);
     const bursts = [
-      { x: -32, y: -78, top: 1012 },
-      { x: 0, y: -98, top: 1032 },
-      { x: 32, y: -82, top: 1050 },
+      { x: -32, y: -78, top: amenBaseTop },
+      { x: 0, y: -98, top: amenBaseTop + 20 },
+      { x: 32, y: -82, top: amenBaseTop + 38 },
     ];
     angelCenters.forEach((center, angelIndex) => {
       bursts.forEach((burst, burstIndex) => {
@@ -1030,6 +1298,9 @@
       startBgm();
     }
   });
+  window.addEventListener("resize", scheduleMobileGeometry, { passive: true });
+  window.visualViewport?.addEventListener("resize", scheduleMobileGeometry, { passive: true });
+  window.__REVELATION_GAME_VALIDATE_MOBILE__ = () => validateMobileBatch({ repair: false });
   createCards();
   updateMenuLabels();
   resetGame();

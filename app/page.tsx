@@ -4,6 +4,9 @@ import { useEffect, useState, type CSSProperties } from "react";
 
 const DESIGN_WIDTH = 971.219;
 const DESIGN_HEIGHT = 1920;
+const MOBILE_DESIGN_WIDTH = 606;
+const MOBILE_MIN_LOGICAL_HEIGHT = 1198;
+const MOBILE_MAX_WIDTH = 430;
 
 type CloudBootstrap = {
   id: number;
@@ -14,9 +17,14 @@ type CloudBootstrap = {
 };
 
 type ViewportMetrics = {
+  centerX: number;
+  centerY: number;
   height: number;
   left: number;
+  mobile: boolean;
   scale: number;
+  stageHeight: number;
+  stageWidth: number;
   top: number;
   width: number;
 };
@@ -25,6 +33,7 @@ declare global {
   interface Window {
     __REVELATION_GAME_BOOTSTRAP__?: { cards: CloudBootstrap[] };
     __REVELATION_GAME_STARTED__?: boolean;
+    __REVELATION_VIEWPORT_METRICS__?: ViewportMetrics;
   }
 }
 
@@ -65,51 +74,87 @@ export default function Home() {
   useEffect(() => {
     if (!mounted) return;
 
+    let viewportFrame = 0;
     const updateViewport = () => {
       const visualViewport = window.visualViewport;
-      const width = visualViewport?.width ?? window.innerWidth;
-      const height = visualViewport?.height ?? window.innerHeight;
+      const measuredWidth = visualViewport?.width ?? window.innerWidth;
+      const measuredHeight = visualViewport?.height ?? window.innerHeight;
+      const width = Number.isFinite(measuredWidth) && measuredWidth > 0
+        ? measuredWidth
+        : document.documentElement.clientWidth;
+      const height = Number.isFinite(measuredHeight) && measuredHeight > 0
+        ? measuredHeight
+        : document.documentElement.clientHeight;
       const left = visualViewport?.offsetLeft ?? 0;
       const top = visualViewport?.offsetTop ?? 0;
       const shell = document.getElementById("viewport-shell");
       const styles = shell ? window.getComputedStyle(shell) : null;
-      const horizontalSafeArea = styles
-        ? Number.parseFloat(styles.paddingLeft) + Number.parseFloat(styles.paddingRight)
-        : 0;
-      const verticalSafeArea = styles
-        ? Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom)
-        : 0;
-      const availableWidth = Math.max(1, width - horizontalSafeArea);
-      const availableHeight = Math.max(1, height - verticalSafeArea);
+      const safeNumber = (value?: string) => {
+        const parsed = Number.parseFloat(value || "0");
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+      const safeLeft = safeNumber(styles?.paddingLeft);
+      const safeRight = safeNumber(styles?.paddingRight);
+      const safeTop = safeNumber(styles?.paddingTop);
+      const safeBottom = safeNumber(styles?.paddingBottom);
+      const horizontalSafeArea = safeLeft + safeRight;
+      const verticalSafeArea = safeTop + safeBottom;
+      const mobile = width <= MOBILE_MAX_WIDTH;
+      // visualViewport already excludes Android Chrome's browser UI. Applying
+      // env(safe-area-inset-*) again here creates a second, sky-colored top gap
+      // on physical Samsung devices, so mobile uses the visual viewport itself.
+      const availableWidth = Math.max(1, mobile ? width : width - horizontalSafeArea);
+      const availableHeight = Math.max(1, mobile ? height : height - verticalSafeArea);
+      const scale = mobile
+        ? Math.min(
+            availableWidth / MOBILE_DESIGN_WIDTH,
+            availableHeight / MOBILE_MIN_LOGICAL_HEIGHT,
+          )
+        : Math.min(availableWidth / DESIGN_WIDTH, availableHeight / DESIGN_HEIGHT);
 
-      setViewport({
+      const nextViewport = {
+        centerX: mobile ? availableWidth / 2 : width / 2,
+        centerY: mobile ? availableHeight / 2 : height / 2,
         width,
         height,
         left,
         top,
-        scale: Math.min(
-          availableWidth / DESIGN_WIDTH,
-          availableHeight / DESIGN_HEIGHT,
-        ),
-      });
+        mobile,
+        scale,
+        stageHeight: mobile ? availableHeight : DESIGN_HEIGHT,
+        stageWidth: mobile ? availableWidth : DESIGN_WIDTH,
+      };
+
+      document.documentElement.dataset.mobileViewport = mobile ? "true" : "false";
+      document.documentElement.style.setProperty("--visual-viewport-width", `${width}px`);
+      document.documentElement.style.setProperty("--visual-viewport-height", `${height}px`);
+      window.__REVELATION_VIEWPORT_METRICS__ = nextViewport;
+      setViewport(nextViewport);
     };
 
-    updateViewport();
-    window.addEventListener("resize", updateViewport, { passive: true });
-    window.addEventListener("orientationchange", updateViewport, { passive: true });
-    window.visualViewport?.addEventListener("resize", updateViewport, { passive: true });
-    window.visualViewport?.addEventListener("scroll", updateViewport, { passive: true });
+    const scheduleViewportUpdate = () => {
+      window.cancelAnimationFrame(viewportFrame);
+      viewportFrame = window.requestAnimationFrame(updateViewport);
+    };
+
+    scheduleViewportUpdate();
+    window.addEventListener("resize", scheduleViewportUpdate, { passive: true });
+    window.addEventListener("orientationchange", scheduleViewportUpdate, { passive: true });
+    window.visualViewport?.addEventListener("resize", scheduleViewportUpdate, { passive: true });
+    window.visualViewport?.addEventListener("scroll", scheduleViewportUpdate, { passive: true });
 
     return () => {
-      window.removeEventListener("resize", updateViewport);
-      window.removeEventListener("orientationchange", updateViewport);
-      window.visualViewport?.removeEventListener("resize", updateViewport);
-      window.visualViewport?.removeEventListener("scroll", updateViewport);
+      window.cancelAnimationFrame(viewportFrame);
+      window.removeEventListener("resize", scheduleViewportUpdate);
+      window.removeEventListener("orientationchange", scheduleViewportUpdate);
+      window.visualViewport?.removeEventListener("resize", scheduleViewportUpdate);
+      window.visualViewport?.removeEventListener("scroll", scheduleViewportUpdate);
+      delete window.__REVELATION_VIEWPORT_METRICS__;
     };
   }, [mounted]);
 
   useEffect(() => {
-    if (!mounted || !initialCards || window.__REVELATION_GAME_STARTED__) return;
+    if (!mounted || !initialCards || !viewport || window.__REVELATION_GAME_STARTED__) return;
 
     window.__REVELATION_GAME_BOOTSTRAP__ = { cards: initialCards };
     const existingScript = document.querySelector<HTMLScriptElement>(
@@ -126,7 +171,7 @@ export default function Home() {
     return () => {
       if (!window.__REVELATION_GAME_STARTED__) script.remove();
     };
-  }, [mounted, initialCards]);
+  }, [mounted, initialCards, viewport]);
 
   const shellStyle: CSSProperties | undefined = viewport
     ? {
@@ -136,10 +181,41 @@ export default function Home() {
         top: `${viewport.top}px`,
         right: "auto",
         bottom: "auto",
+        padding: viewport.mobile ? 0 : undefined,
       }
     : undefined;
   const stageStyle: CSSProperties | undefined = viewport
-    ? { transform: `translate(-50%, -50%) scale(${viewport.scale})` }
+    ? viewport.mobile
+      ? {
+          width: `${viewport.stageWidth}px`,
+          height: `${viewport.stageHeight}px`,
+          left: 0,
+          top: 0,
+          transform: "none",
+        }
+      : {
+        width: `${viewport.stageWidth}px`,
+        height: `${viewport.stageHeight}px`,
+        left: `${viewport.centerX}px`,
+        top: `${viewport.centerY}px`,
+        transform: `translate(-50%, -50%) scale(${viewport.scale})`,
+      }
+    : undefined;
+  const canvasStyle: CSSProperties | undefined = viewport?.mobile
+    ? (() => {
+        const physicalCanvasWidth = MOBILE_DESIGN_WIDTH * viewport.scale;
+        const logicalLeft = Math.max(
+          0,
+          (viewport.stageWidth - physicalCanvasWidth) / (2 * viewport.scale),
+        );
+        return {
+          width: `${MOBILE_DESIGN_WIDTH}px`,
+          height: `${viewport.stageHeight / viewport.scale}px`,
+          left: `${logicalLeft}px`,
+          top: 0,
+          zoom: viewport.scale,
+        };
+      })()
     : undefined;
 
   return (
@@ -148,8 +224,13 @@ export default function Home() {
       aria-label="요한계시록 1장 말씀 암송 게임"
       style={shellStyle}
     >
-      <section id="game-stage" aria-live="polite" style={stageStyle}>
-        <div id="game-canvas">
+      <section
+        id="game-stage"
+        aria-live="polite"
+        data-mobile-layout={viewport?.mobile ? "true" : "false"}
+        style={stageStyle}
+      >
+        <div id="game-canvas" style={canvasStyle}>
           <img
             className="stage-layer stage-sky"
             src="/assets/images/background_sky.png"

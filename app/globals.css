@@ -73,6 +73,91 @@ button {
   user-select: none;
 }
 
+#game-stage[data-mobile-layout="true"] {
+  overflow: hidden;
+  transform-origin: left top;
+}
+
+#game-stage[data-mobile-layout="true"] #game-canvas {
+  overflow: hidden;
+  transform: none;
+  transform-origin: left top;
+}
+
+@media (max-width: 430px) {
+  html[data-mobile-viewport="true"],
+  html[data-mobile-viewport="true"] body,
+  #viewport-shell,
+  #game-stage[data-mobile-layout="true"] {
+    width: var(--visual-viewport-width, 100%);
+    height: var(--visual-viewport-height, 100dvh);
+    min-width: 0;
+    min-height: 0;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    padding: 0;
+    background: var(--sky);
+    overflow: hidden;
+  }
+
+  #viewport-shell {
+    inset: auto;
+    place-items: stretch;
+  }
+
+  #game-stage[data-mobile-layout="true"] {
+    inset: 0 auto auto 0;
+  }
+}
+
+#game-stage[data-mobile-layout="true"] .stage-sky {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+
+#game-stage[data-mobile-layout="true"] .stage-grass {
+  inset: auto 0 0;
+  z-index: 2;
+}
+
+#game-stage[data-mobile-layout="true"] .stage-top-cloud {
+  inset: -18px 0 auto;
+}
+
+#game-stage[data-mobile-layout="true"] .menu-panel-art {
+  height: 100%;
+  object-fit: fill;
+}
+
+#game-stage[data-mobile-layout="true"] #sentence-window {
+  top: 30px;
+}
+
+#game-stage[data-mobile-layout="true"] .cloud-word {
+  top: 11px;
+  height: 96px;
+  font-size: 46px;
+}
+
+#game-stage[data-mobile-layout="true"] .cloud-word.medium {
+  font-size: 40px;
+}
+
+#game-stage[data-mobile-layout="true"] .cloud-word.small {
+  font-size: 36px;
+}
+
+#game-stage[data-mobile-layout="true"] .angel-sprite {
+  bottom: 0;
+}
+
+#game-stage[data-mobile-layout="true"] #word-hint {
+  bottom: 30px;
+}
+
 #game-stage::after {
   content: "";
   position: absolute;
@@ -90,6 +175,9 @@ button {
   z-index: 1;
   left: 0;
   top: 0;
+}
+
+#game-stage:not([data-mobile-layout="true"]) #game-canvas {
   width: 606px;
   height: 1198px;
   overflow: hidden;
@@ -639,7 +727,7 @@ button {
 #angel-zone {
   position: absolute;
   inset: 0;
-  z-index: 9;
+  z-index: 21;
   pointer-events: none;
 }
 
@@ -691,12 +779,27 @@ button {
   max-width: none;
 }
 
+.angel-sprite:not(.final-cheer) .angel-frame {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.angel-sprite:not(.final-cheer) .angel-frame.active {
+  opacity: 1;
+  visibility: visible;
+}
+
+.angel-sprite.final-cheer .angel-frame:not(.angel-frame-heart) {
+  display: none;
+}
+
 .angel-sprite.fullbody-heart {
   width: 97px;
   height: 170px;
 }
 
-.angel-sprite.fullbody-heart img {
+.angel-sprite:not(.final-cheer) .angel-frame-heart,
+.angel-sprite.final-cheer img {
   left: -254px;
   top: -515px;
 }
