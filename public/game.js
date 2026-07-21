@@ -9,6 +9,10 @@
   const STAGE_ASSET_HEIGHT = 1198;
   const TOP_CLOUD_OPAQUE_BOTTOM = 224;
   const GRASS_OPAQUE_TOP = 1088;
+  const CARD_IMAGE_WAIT_TIMEOUT_MS = 900;
+  const CARD_PUBLICATION_DELAY_MS = 200;
+  const CARD_PUBLICATION_WATCHDOG_MS = 1500;
+  const MAX_BATCH_PUBLICATION_RETRIES = 1;
   const COLORS = [
     "rgb(3, 126, 219)",
     "rgb(156, 113, 219)",
@@ -132,7 +136,17 @@
     angelVisibilityRepairCount: 0,
     batchPublished: false,
     batchSettled: false,
+    publishedBatchToken: 0,
+    batchPublicationStartedToken: 0,
+    batchPublicationRetryStreak: 0,
     batchPublicationRetryCount: 0,
+    batchPublicationInvocationCount: 0,
+    batchPublicationSuccessCount: 0,
+    batchPublicationFailureCount: 0,
+    batchPublicationWatchdogCount: 0,
+    batchImageWaitTimeoutCount: 0,
+    batchImageDecodeFailureCount: 0,
+    batchEmergencyPublishCount: 0,
     postPublishContentMutationCount: 0,
     postPublishGeometryMutationCount: 0,
   };
@@ -1003,7 +1017,19 @@
     state.chunkIndex = target.verseCardIndex;
   }
 
-  function preparedBatchReport() {
+  function setBatchPreparing(preparing) {
+    laneLayer.classList.toggle("batch-preparing", preparing);
+    laneLayer.style.removeProperty("display");
+    laneLayer.style.removeProperty("visibility");
+    laneLayer.style.removeProperty("opacity");
+    laneLayer.style.removeProperty("pointer-events");
+    if (hintWord) {
+      hintWord.style.visibility = preparing ? "hidden" : "visible";
+      hintWord.setAttribute("aria-hidden", preparing ? "true" : "false");
+    }
+  }
+
+  function preparedBatchReport({ allowUndecodedImages = false } = {}) {
     const target = answerCards[state.answerIndex];
     const targetCard = state.cards.find((card) => (
       target && card.targetId === target.id && card.targetIndex === target.sourceIndex
@@ -1013,6 +1039,19 @@
     const targetImageStyle = targetImage ? getComputedStyle(targetImage) : null;
     const geometry = getActiveCardGeometryReport();
     const hiddenCards = state.cards.map(cardVisibilityIssue).filter(Boolean);
+    const targetImagePresent = Boolean(
+      targetImage
+      && targetImage.getAttribute("src")
+      && targetImageStyle
+      && targetImageStyle.display !== "none"
+      && targetImageStyle.visibility === "visible"
+      && Number(targetImageStyle.opacity) >= 0.99
+    );
+    const targetImageDecoded = Boolean(
+      targetImagePresent
+      && targetImage.complete
+      && targetImage.naturalWidth > 0
+    );
     const targetReady = Boolean(
       targetCard
       && targetStyle
@@ -1022,12 +1061,8 @@
       && targetStyle.pointerEvents !== "none"
       && !targetCard.el.disabled
       && normalizeText(targetCard.wordEl.textContent) === normalizeText(target?.word)
-      && targetImage
-      && targetImage.complete
-      && targetImage.naturalWidth > 0
-      && targetImageStyle.display !== "none"
-      && targetImageStyle.visibility === "visible"
-      && Number(targetImageStyle.opacity) >= 0.99
+      && targetImagePresent
+      && (allowUndecodedImages || targetImageDecoded)
     );
     return {
       valid: state.cards.length === 11
@@ -1035,118 +1070,250 @@
         && targetReady
         && geometry.valid,
       targetReady,
+      targetImagePresent,
+      targetImageDecoded,
       hiddenCardCount: hiddenCards.length,
       geometry,
     };
   }
 
-  function waitForCardImages() {
+  function waitForCardImages(token, timeoutMs = CARD_IMAGE_WAIT_TIMEOUT_MS) {
     const images = state.cards.flatMap((card) => (
       [...card.el.querySelectorAll("img")]
     ));
-    return Promise.all(images.map((image) => {
-      if (image.complete && image.naturalWidth > 0) return Promise.resolve();
-      return image.decode?.().catch(() => undefined) || Promise.resolve();
+    const imageResults = Promise.allSettled(images.map((image) => {
+      if (image.complete) return Promise.resolve(image.naturalWidth > 0);
+      if (typeof image.decode === "function") {
+        return Promise.resolve(image.decode()).then(
+          () => image.naturalWidth > 0,
+          () => false,
+        );
+      }
+      return new Promise((resolve) => {
+        image.addEventListener("load", () => resolve(true), { once: true });
+        image.addEventListener("error", () => resolve(false), { once: true });
+      });
+    })).then((results) => ({
+      timedOut: false,
+      allReady: results.every((result) => result.status === "fulfilled" && result.value),
+      failedCount: results.filter(
+        (result) => result.status !== "fulfilled" || !result.value,
+      ).length,
     }));
+
+    let timeoutId = 0;
+    const timeout = new Promise((resolve) => {
+      timeoutId = window.setTimeout(() => resolve({
+        timedOut: true,
+        allReady: false,
+        failedCount: images.filter((image) => !(image.complete && image.naturalWidth > 0)).length,
+      }), timeoutMs);
+    });
+    return Promise.race([imageResults, timeout]).then((result) => {
+      window.clearTimeout(timeoutId);
+      if (token !== state.batchToken) return { ...result, stale: true };
+      return { ...result, stale: false };
+    }, () => {
+      window.clearTimeout(timeoutId);
+      return {
+        timedOut: false,
+        allReady: false,
+        failedCount: images.length,
+        stale: token !== state.batchToken,
+      };
+    });
   }
 
-  function publishPreparedBatch(token) {
-    if (token !== state.batchToken || state.final) return;
-    const report = preparedBatchReport();
-    if (!report.valid) {
-      state.batchPublicationRetryCount += 1;
-      setBatchTimeout(populateCards, 80, token);
-      return;
-    }
-
-    const currentTarget = answerCards[state.answerIndex];
-    const entranceOrder = [...state.cards].sort((left, right) => {
-      const leftIsTarget = left.targetId === currentTarget?.id ? 1 : 0;
-      const rightIsTarget = right.targetId === currentTarget?.id ? 1 : 0;
-      return rightIsTarget - leftIsTarget || left.id - right.id;
-    });
-    entranceOrder.forEach((card, index) => {
-      card.el.classList.remove("idle", "visibility-ready");
-      card.el.classList.add("entering");
-      card.el.style.animationDelay = `${index * 50}ms`;
-      card.el.style.animationPlayState = "paused";
-    });
-    state.decorations.forEach((cloud, index) => {
-      cloud.style.opacity = "";
-      cloud.className = "decorative-cloud show entering";
-      cloud.style.animationDelay = `${25 + index * 65}ms`;
-      cloud.style.animationPlayState = "paused";
-    });
-
-    state.batchPublished = true;
-    laneLayer.classList.remove("batch-preparing");
-    void laneLayer.offsetWidth;
-    entranceOrder.forEach((card, index) => {
-      card.el.style.animationPlayState = "running";
-      setBatchTimeout(() => {
-        card.el.classList.remove("entering");
-        card.el.style.removeProperty("animation-delay");
-        card.el.style.removeProperty("animation-play-state");
-        card.el.classList.add("idle", "visibility-ready");
-        forceActiveCardVisible(card);
-      }, 500 + index * 50, token);
-    });
-    state.decorations.forEach((cloud, index) => {
-      cloud.style.animationPlayState = "running";
-      setBatchTimeout(() => {
-        cloud.classList.remove("entering");
-        cloud.style.removeProperty("animation-delay");
-        cloud.style.removeProperty("animation-play-state");
-        cloud.classList.add("idle");
-      }, 510 + index * 65, token);
-    });
-    playFx("cloudEntrance", 0, 0.8);
-
+  function settlePublishedBatch(token, delay) {
     setBatchTimeout(() => {
       state.locked = false;
       state.batchSettled = true;
-      const finalReport = preparedBatchReport();
+      const finalReport = preparedBatchReport({ allowUndecodedImages: true });
       stage.dataset.mobileBatchValid = finalReport.valid ? "true" : "false";
       updateHint();
       armIdleReminder();
-    }, Math.max(state.cards.length * 50 + 520, state.decorations.length * 65 + 540), token);
+    }, delay, token);
+  }
+
+  function emergencyPublishBatch(token) {
+    if (token !== state.batchToken || state.final) return false;
+    state.batchEmergencyPublishCount += 1;
+    ensureCurrentAnswerCard();
+    applyMobileGeometry();
+    repairCardSlotCollisions();
+    state.cards.forEach(forceActiveCardVisible);
+    state.decorations.forEach((cloud) => {
+      cloud.style.opacity = "";
+      cloud.className = "decorative-cloud show idle";
+      cloud.style.removeProperty("animation-delay");
+      cloud.style.removeProperty("animation-play-state");
+    });
+    state.batchPublished = true;
+    state.publishedBatchToken = token;
+    state.batchPublicationSuccessCount += 1;
+    state.batchPublicationRetryStreak = 0;
+    setBatchPreparing(false);
+    playFx("cloudEntrance", 0, 0.8);
+    settlePublishedBatch(token, 0);
+    return true;
+  }
+
+  function publishPreparedBatch(token, { allowUndecodedImages = false, watchdog = false } = {}) {
+    if (token !== state.batchToken || state.final) return false;
+    if (state.publishedBatchToken === token || state.batchPublicationStartedToken === token) {
+      return state.publishedBatchToken === token;
+    }
+    state.batchPublicationStartedToken = token;
+    state.batchPublicationInvocationCount += 1;
+    let retryScheduled = false;
+    try {
+      const report = preparedBatchReport({ allowUndecodedImages });
+      if (!report.valid) {
+        if (!watchdog && state.batchPublicationRetryStreak < MAX_BATCH_PUBLICATION_RETRIES) {
+          state.batchPublicationRetryStreak += 1;
+          state.batchPublicationRetryCount += 1;
+          retryScheduled = true;
+          setBatchTimeout(populateCards, 80, token);
+          return false;
+        }
+        return emergencyPublishBatch(token);
+      }
+
+      const currentTarget = answerCards[state.answerIndex];
+      const entranceOrder = [...state.cards].sort((left, right) => {
+        const leftIsTarget = left.targetId === currentTarget?.id ? 1 : 0;
+        const rightIsTarget = right.targetId === currentTarget?.id ? 1 : 0;
+        return rightIsTarget - leftIsTarget || left.id - right.id;
+      });
+      entranceOrder.forEach((card, index) => {
+        card.el.classList.remove("idle", "visibility-ready");
+        card.el.classList.add("entering");
+        card.el.style.animationDelay = `${index * 50}ms`;
+        card.el.style.animationPlayState = "paused";
+      });
+      state.decorations.forEach((cloud, index) => {
+        cloud.style.opacity = "";
+        cloud.className = "decorative-cloud show entering";
+        cloud.style.animationDelay = `${25 + index * 65}ms`;
+        cloud.style.animationPlayState = "paused";
+      });
+
+      state.batchPublished = true;
+      state.publishedBatchToken = token;
+      state.batchPublicationSuccessCount += 1;
+      state.batchPublicationRetryStreak = 0;
+      setBatchPreparing(false);
+      void laneLayer.offsetWidth;
+      entranceOrder.forEach((card, index) => {
+        card.el.style.animationPlayState = "running";
+        setBatchTimeout(() => {
+          card.el.classList.remove("entering");
+          card.el.style.removeProperty("animation-delay");
+          card.el.style.removeProperty("animation-play-state");
+          card.el.classList.add("idle", "visibility-ready");
+          forceActiveCardVisible(card);
+        }, 500 + index * 50, token);
+      });
+      state.decorations.forEach((cloud, index) => {
+        cloud.style.animationPlayState = "running";
+        setBatchTimeout(() => {
+          cloud.classList.remove("entering");
+          cloud.style.removeProperty("animation-delay");
+          cloud.style.removeProperty("animation-play-state");
+          cloud.classList.add("idle");
+        }, 510 + index * 65, token);
+      });
+      playFx("cloudEntrance", 0, 0.8);
+
+      settlePublishedBatch(
+        token,
+        Math.max(state.cards.length * 50 + 520, state.decorations.length * 65 + 540),
+      );
+      return true;
+    } catch (error) {
+      state.batchPublicationFailureCount += 1;
+      console.error("Card batch publication failed; using visible fallback.", error);
+      return emergencyPublishBatch(token);
+    } finally {
+      if (token === state.batchToken && state.publishedBatchToken === token) {
+        setBatchPreparing(false);
+      } else if (token === state.batchToken && !retryScheduled && watchdog) {
+        emergencyPublishBatch(token);
+        setBatchPreparing(false);
+      }
+    }
   }
 
   function populateCards() {
     clearBatchTimers();
     state.batchPublished = false;
     state.batchSettled = false;
-    laneLayer.classList.add("batch-preparing");
     const token = ++state.batchToken;
+    state.batchPublicationStartedToken = 0;
+    setBatchPreparing(true);
     setAngel("idle");
-    if (usesMobileLayout()) stage.dataset.mobileBatchValid = "false";
-    const batch = getBatchWords();
-    state.batchTargetCount = batch.targetCount;
-    state.batchCorrectCount = 0;
-    state.locked = true;
-    state.cards.forEach((card, index) => {
-      const entry = batch.entries[index];
-      card.slotIndex = card.id;
-      card.animating = false;
-      card.selected = false;
-      resetCardVisualState(card);
-      setCardWord(card, entry, card.colorIndex);
-    });
-    ensureCurrentAnswerCard();
-    applyMobileGeometry();
-    repairCardSlotCollisions();
-    state.cards.forEach(forceActiveCardVisible);
-    state.decorations.forEach((cloud) => {
-      cloud.className = "decorative-cloud";
-      cloud.style.opacity = "0";
-      cloud.style.removeProperty("animation-delay");
-      cloud.style.removeProperty("animation-play-state");
-    });
-    updateHint();
-    waitForCardImages().then(() => {
-      if (token !== state.batchToken) return;
-      setBatchTimeout(() => publishPreparedBatch(token), 200, token);
-    });
+    let publicationPipelineScheduled = false;
+    try {
+      if (usesMobileLayout()) stage.dataset.mobileBatchValid = "false";
+      const batch = getBatchWords();
+      state.batchTargetCount = batch.targetCount;
+      state.batchCorrectCount = 0;
+      state.locked = true;
+      state.cards.forEach((card, index) => {
+        const entry = batch.entries[index];
+        card.slotIndex = card.id;
+        card.animating = false;
+        card.selected = false;
+        resetCardVisualState(card);
+        setCardWord(card, entry, card.colorIndex);
+      });
+      ensureCurrentAnswerCard();
+      applyMobileGeometry();
+      repairCardSlotCollisions();
+      state.cards.forEach(forceActiveCardVisible);
+      state.decorations.forEach((cloud) => {
+        cloud.className = "decorative-cloud";
+        cloud.style.opacity = "0";
+        cloud.style.removeProperty("animation-delay");
+        cloud.style.removeProperty("animation-play-state");
+      });
+      updateHint();
+      publicationPipelineScheduled = true;
+      void waitForCardImages(token).then((result) => {
+        if (result.stale || token !== state.batchToken) return;
+        if (result.timedOut) state.batchImageWaitTimeoutCount += 1;
+        state.batchImageDecodeFailureCount += result.timedOut
+          ? Math.max(1, result.failedCount)
+          : result.failedCount;
+        setBatchTimeout(() => publishPreparedBatch(token, {
+          allowUndecodedImages: !result.allReady,
+        }), CARD_PUBLICATION_DELAY_MS, token);
+      }).catch(() => {
+        if (token !== state.batchToken) return;
+        state.batchImageDecodeFailureCount += 1;
+        setBatchTimeout(() => publishPreparedBatch(token, {
+          allowUndecodedImages: true,
+        }), 0, token);
+      });
+    } catch (error) {
+      state.batchPublicationFailureCount += 1;
+      console.error("Card batch preparation failed; retrying with visible fallback.", error);
+    } finally {
+      setBatchTimeout(() => {
+        if (state.publishedBatchToken === token) return;
+        state.batchPublicationWatchdogCount += 1;
+        publishPreparedBatch(token, {
+          allowUndecodedImages: true,
+          watchdog: true,
+        });
+      }, CARD_PUBLICATION_WATCHDOG_MS, token);
+      if (!publicationPipelineScheduled) {
+        setBatchTimeout(() => publishPreparedBatch(token, {
+          allowUndecodedImages: true,
+          watchdog: true,
+        }), 0, token);
+      }
+    }
   }
 
   function startBgm() {
@@ -1790,6 +1957,14 @@
   window.__REVELATION_GAME_VALIDATE_VISIBILITY__ = () => {
     const activeCards = state.cards.filter((card) => !card.selected && !card.animating);
     const cardIssues = activeCards.map(cardVisibilityIssue).filter(Boolean);
+    const currentTarget = answerCards[state.answerIndex];
+    const currentTargetCard = activeCards.find((card) => (
+      currentTarget
+      && card.targetId === currentTarget.id
+      && card.targetIndex === currentTarget.sourceIndex
+    ));
+    const currentTargetIssue = currentTargetCard ? cardVisibilityIssue(currentTargetCard) : null;
+    const laneStyle = getComputedStyle(laneLayer);
     const angel = angelZone.querySelector(":scope > .angel-sprite:not(.final-cheer)");
     const angelStyle = angel ? getComputedStyle(angel) : null;
     const angelImage = angel?.querySelector("img");
@@ -1808,9 +1983,21 @@
       batchToken: state.batchToken,
       batchPublished: state.batchPublished,
       batchSettled: state.batchSettled,
+      batchPreparing: laneLayer.classList.contains("batch-preparing"),
+      laneVisibility: laneStyle.visibility,
+      laneOpacity: laneStyle.opacity,
+      lanePointerEvents: laneStyle.pointerEvents,
       activeCardCount: activeCards.length,
       hiddenActiveCardCount: cardIssues.length,
       cardIssues,
+      currentTargetText: currentTarget?.word || "",
+      currentTargetVisible: Boolean(currentTargetCard && !currentTargetIssue),
+      currentTargetClickable: Boolean(
+        currentTargetCard
+        && !currentTargetCard.el.disabled
+        && laneStyle.pointerEvents !== "none"
+        && getComputedStyle(currentTargetCard.el).pointerEvents !== "none"
+      ),
       angelCount: angelZone.querySelectorAll(":scope > .angel-sprite:not(.final-cheer)").length,
       angelVisible,
       staleBatchCallbacksIgnored: state.staleBatchCallbacksIgnored,
@@ -1819,6 +2006,13 @@
       angelVisibilityRepairCount: state.angelVisibilityRepairCount,
       pendingBatchTimerCount: state.batchTimers.size,
       batchPublicationRetryCount: state.batchPublicationRetryCount,
+      batchPublicationInvocationCount: state.batchPublicationInvocationCount,
+      batchPublicationSuccessCount: state.batchPublicationSuccessCount,
+      batchPublicationFailureCount: state.batchPublicationFailureCount,
+      batchPublicationWatchdogCount: state.batchPublicationWatchdogCount,
+      batchImageWaitTimeoutCount: state.batchImageWaitTimeoutCount,
+      batchImageDecodeFailureCount: state.batchImageDecodeFailureCount,
+      batchEmergencyPublishCount: state.batchEmergencyPublishCount,
       postPublishContentMutationCount: state.postPublishContentMutationCount,
       postPublishGeometryMutationCount: state.postPublishGeometryMutationCount,
       cards: activeCards.map((card) => ({
