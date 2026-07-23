@@ -4,19 +4,20 @@ import { fileURLToPath } from "node:url";
 
 const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(scriptsDirectory, "..");
-const chapter02Public = resolve(repositoryRoot, "chapter-02", "public");
-const integratedChapter02Public = resolve(repositoryRoot, "public", "chapter-02");
+for (const chapter of ["chapter-02", "chapter-03"]) {
+  const chapterPublic = resolve(repositoryRoot, chapter, "public");
+  const integratedChapterPublic = resolve(repositoryRoot, "public", chapter);
 
-await rm(integratedChapter02Public, { recursive: true, force: true });
-await mkdir(integratedChapter02Public, { recursive: true });
-await cp(chapter02Public, integratedChapter02Public, { recursive: true });
+  await rm(integratedChapterPublic, { recursive: true, force: true });
+  await mkdir(integratedChapterPublic, { recursive: true });
+  await cp(chapterPublic, integratedChapterPublic, { recursive: true });
 
-const integratedGameScript = resolve(integratedChapter02Public, "game.js");
-const gameSource = await readFile(integratedGameScript, "utf8");
-const namespacedGameSource = gameSource
-  .replaceAll('"/assets/', '"/chapter-02/assets/')
-  .replaceAll('`/assets/', '`/chapter-02/assets/');
+  const integratedGameScript = resolve(integratedChapterPublic, "game.js");
+  const gameSource = await readFile(integratedGameScript, "utf8");
+  const namespacedGameSource = gameSource
+    .replaceAll('"/assets/', `"/${chapter}/assets/`)
+    .replaceAll('`/assets/', `\`/${chapter}/assets/`);
 
-await writeFile(integratedGameScript, namespacedGameSource, "utf8");
-
-console.log("chapter-02 public assets synchronized for /chapter-02/");
+  await writeFile(integratedGameScript, namespacedGameSource, "utf8");
+  console.log(`${chapter} public assets synchronized for /${chapter}/`);
+}
