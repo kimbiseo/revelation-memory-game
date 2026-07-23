@@ -6,11 +6,14 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "predev": "npm run sync:chapters",
     "dev": "vinext dev",
+    "prebuild": "npm run sync:chapters",
     "build": "vinext build",
     "start": "vinext start",
     "test": "vinext build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "sync:chapters": "node scripts/sync-chapters.mjs",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

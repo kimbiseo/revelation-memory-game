@@ -6,6 +6,8 @@ const DESIGN_WIDTH = 971.219;
 const DESIGN_HEIGHT = 1920;
 const MOBILE_DESIGN_WIDTH = 606;
 const MOBILE_MAX_WIDTH = 430;
+const CURRENT_CHAPTER = 1;
+const AVAILABLE_CHAPTERS = new Set([1, 2]);
 
 type CloudBootstrap = {
   id: number;
@@ -52,10 +54,15 @@ function createInitialCloudData(): CloudBootstrap[] {
   }));
 }
 
+function getChapterUrl(chapter: number) {
+  return `/chapter-${String(chapter).padStart(2, "0")}/`;
+}
+
 export default function Home() {
   const [mounted, setMounted] = useState(false);
   const [initialCards, setInitialCards] = useState<CloudBootstrap[] | null>(null);
   const [viewport, setViewport] = useState<ViewportMetrics | null>(null);
+  const [chapterSelectorOpen, setChapterSelectorOpen] = useState(false);
 
   useEffect(() => {
     // Hydration guard: the first browser render must match the server render.
@@ -279,10 +286,17 @@ export default function Home() {
               alt=""
               draggable="false"
             />
-            <div className="menu-content">
+            <div className="menu-content" hidden={chapterSelectorOpen}>
               <h1>메뉴</h1>
               <button id="home-button" type="button">처음으로</button>
               <button id="resume-button" type="button">계속하기</button>
+              <button
+                id="chapter-select-button"
+                type="button"
+                onClick={() => setChapterSelectorOpen(true)}
+              >
+                장 선택
+              </button>
               <button id="music-button" className="menu-toggle" type="button">
                 <span className="round-icon-crop" aria-hidden="true">
                   <img src="/assets/images/icon_music.png" alt="" draggable="false" />
@@ -296,6 +310,39 @@ export default function Home() {
                 <span id="sound-label">효과음 켜짐</span>
               </button>
             </div>
+            <section
+              id="chapter-select-panel"
+              aria-label="요한계시록 장 선택"
+              hidden={!chapterSelectorOpen}
+            >
+              <h1>장 선택</h1>
+              <p>플레이할 장을 선택하세요</p>
+              <div className="chapter-grid">
+                {Array.from({ length: 22 }, (_, index) => index + 1).map((chapter) => {
+                  const available = AVAILABLE_CHAPTERS.has(chapter);
+                  return (
+                    <button
+                      key={chapter}
+                      className={available ? "chapter-button available" : "chapter-button coming-soon"}
+                      type="button"
+                      disabled={!available}
+                      aria-current={chapter === CURRENT_CHAPTER ? "page" : undefined}
+                      onClick={() => available && window.location.assign(getChapterUrl(chapter))}
+                    >
+                      <span>{chapter}장</span>
+                      <small>{available ? (chapter === CURRENT_CHAPTER ? "현재 장" : "플레이") : "준비 중"}</small>
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                id="chapter-select-back"
+                type="button"
+                onClick={() => setChapterSelectorOpen(false)}
+              >
+                메뉴로
+              </button>
+            </section>
           </section>
         </div>
       </section>

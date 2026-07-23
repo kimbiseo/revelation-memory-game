@@ -951,6 +951,100 @@ button {
   top: 15px;
 }
 
+#chapter-select-panel {
+  position: absolute;
+  z-index: 3;
+  left: 36px;
+  top: 92px;
+  width: 534px;
+  color: #fff;
+  text-align: center;
+}
+
+#chapter-select-panel[hidden],
+.menu-content[hidden] {
+  display: none;
+}
+
+#chapter-select-panel h1 {
+  margin: 0;
+  color: var(--pink);
+  font-size: 62px;
+  line-height: 1;
+  text-shadow: 0 5px 0 #fff;
+}
+
+#chapter-select-panel > p {
+  margin: 14px 0 24px;
+  color: var(--blue);
+  font-size: 27px;
+}
+
+.chapter-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.chapter-grid .chapter-button {
+  min-width: 0;
+  min-height: 104px;
+  padding: 10px 4px 8px;
+  border: 5px solid #fff;
+  border-radius: 28px;
+  background: var(--pink);
+  color: #fff;
+  box-shadow: 0 6px 0 rgba(240, 94, 169, 0.28);
+  cursor: pointer;
+}
+
+.chapter-grid .chapter-button span,
+.chapter-grid .chapter-button small {
+  display: block;
+}
+
+.chapter-grid .chapter-button span {
+  font-size: 31px;
+  line-height: 1.05;
+}
+
+.chapter-grid .chapter-button small {
+  margin-top: 8px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.chapter-grid .chapter-button[aria-current="page"] {
+  background: var(--blue);
+  box-shadow: 0 6px 0 rgba(3, 126, 219, 0.28);
+}
+
+.chapter-grid .chapter-button.coming-soon {
+  background: #b9b9c2;
+  box-shadow: none;
+  cursor: default;
+  opacity: 0.78;
+}
+
+#chapter-select-back {
+  width: 100%;
+  min-height: 90px;
+  margin-top: 24px;
+  border: 6px solid #fff;
+  border-radius: 45px;
+  background: var(--purple);
+  color: #fff;
+  font-size: 36px;
+  box-shadow: 0 7px 0 rgba(99, 65, 153, 0.25);
+  cursor: pointer;
+}
+
+.chapter-grid .chapter-button:focus-visible,
+#chapter-select-back:focus-visible {
+  outline: 6px solid var(--blue);
+  outline-offset: 4px;
+}
+
 #final-layer {
   position: absolute;
   z-index: 20;
