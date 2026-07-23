@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(scriptsDirectory, "..");
-for (const chapter of ["chapter-02", "chapter-03", "chapter-04", "chapter-05", "chapter-06", "chapter-07"]) {
+for (const chapter of ["chapter-02", "chapter-03", "chapter-04", "chapter-05", "chapter-06", "chapter-07", "chapter-08"]) {
   const chapterPublic = resolve(repositoryRoot, chapter, "public");
   const integratedChapterPublic = resolve(repositoryRoot, "public", chapter);
 
