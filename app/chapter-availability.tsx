@@ -13,6 +13,7 @@ const AVAILABLE_CHAPTERS = [
   { label: "10장", url: "/chapter-10/" },
   { label: "11장", url: "/chapter-11/" },
   { label: "12장", url: "/chapter-12/" },
+  { label: "13장", url: "/chapter-13/" },
 ] as const;
 
 function normalizePath(path: string) {
